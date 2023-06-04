@@ -16,6 +16,11 @@ Manual_Header :: struct #packed {
 	reserved:        u64le,
 }
 
+Buffer_Header :: struct #packed {
+	size: u32le,
+	tid:  u32le,
+}
+
 Manual_Event_Type :: enum u8 {
 	Invalid             = 0,
 
@@ -29,8 +34,6 @@ Manual_Event_Type :: enum u8 {
 Begin_Event :: struct #packed {
 	type:     Manual_Event_Type,
 	category: u8,
-	pid:      u32le,
-	tid:      u32le,
 	ts:       f64le,
 	name_len: u8,
 	args_len: u8,
@@ -39,8 +42,6 @@ BEGIN_EVENT_MAX :: size_of(Begin_Event) + 255 + 255
 
 End_Event :: struct #packed {
 	type: Manual_Event_Type,
-	pid:  u32le,
-	tid:  u32le,
 	ts:   f64le,
 }
 
@@ -59,13 +60,11 @@ Context :: struct {
 
 Buffer :: struct {
 	data: []u8,
-	head: int,
+	head: u32,
 	tid:  u32,
-	pid:  u32,
 }
 
 BUFFER_DEFAULT_SIZE :: 0x10_0000
-
 
 context_create_with_scale :: proc(filename: string, precise_time: bool, timestamp_scale: f64) -> (ctx: Context, ok: bool) #optional_ok {
 	fd, err := os.open(filename, os.O_WRONLY | os.O_APPEND | os.O_CREATE | os.O_TRUNC, 0o600)
@@ -101,42 +100,56 @@ context_destroy :: proc(ctx: ^Context) {
 	ctx^ = Context{}
 }
 
-buffer_create :: proc(data: []byte, tid: u32 = 0, pid: u32 = 0) -> (buffer: Buffer, ok: bool) #optional_ok {
+buffer_create :: proc(data: []byte, tid: u32 = 0) -> (buffer: Buffer, ok: bool) #optional_ok {
 	assert(len(data) >= 1024)
 	buffer.data = data
 	buffer.tid  = tid
-	buffer.pid  = pid
-	buffer.head = 0
+	buffer.head = size_of(Buffer_Header)
 	ok = true
 	return
 }
 
 buffer_flush :: proc(ctx: ^Context, buffer: ^Buffer) {
 	start := _trace_now(ctx)
+	header := Buffer_Header{
+		size = u32le(buffer.head),
+		tid = u32le(buffer.tid),
+	}
+
+	mem.copy(raw_data(buffer.data[:size_of(Buffer_Header)]), &header, size_of(header))
 	os.write(ctx.fd, buffer.data[:buffer.head])
-	buffer.head = 0
+	buffer.head = size_of(Buffer_Header)
 	end := _trace_now(ctx)
 
-	buffer.head += _build_begin(buffer.data[buffer.head:], "Spall Trace Buffer Flush", "", start, buffer.tid, buffer.pid)
-	buffer.head += _build_end(buffer.data[buffer.head:], end, buffer.tid, buffer.pid)
+	buffer.head += _build_begin(buffer.data[buffer.head:], "Spall Trace Buffer Flush", "", start)
+	buffer.head += _build_end(buffer.data[buffer.head:], end)
 }
 
 buffer_destroy :: proc(ctx: ^Context, buffer: ^Buffer) {
 	buffer_flush(ctx, buffer)
-
 	buffer^ = Buffer{}
 }
 
 
+@(deferred_in=_scoped_event_end)
+SCOPED_EVENT :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") -> bool {
+	_buffer_begin(ctx, buffer, name, args)
+	return true
+}
 
-@(deferred_in=_scoped_buffer_end)
-SCOPED_EVENT :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "", location := #caller_location) -> bool {
-	_buffer_begin(ctx, buffer, name, args, location)
+@(deferred_in=_scoped_function_end)
+SCOPED_FUNCTION :: proc(ctx: ^Context, buffer: ^Buffer, args: string = "", location := #caller_location) -> bool {
+	_buffer_begin(ctx, buffer, location.procedure, args)
 	return true
 }
 
 @(private)
-_scoped_buffer_end :: proc(ctx: ^Context, buffer: ^Buffer, _, _: string, _ := #caller_location) {
+_scoped_event_end :: proc(ctx: ^Context, buffer: ^Buffer, _, _: string) {
+	_buffer_end(ctx, buffer)
+}
+
+@(private)
+_scoped_function_end :: proc(ctx: ^Context, buffer: ^Buffer, _: string, _ := #caller_location) {
 	_buffer_end(ctx, buffer)
 }
 
@@ -149,34 +162,32 @@ _trace_now :: proc "contextless" (ctx: ^Context) -> f64 {
 	return f64(intrinsics.read_cycle_counter())
 }
 
-_build_header :: proc "contextless" (buffer: []u8, timestamp_scale: f64) -> (header_size: int, ok: bool) #optional_ok {
+_build_header :: proc "contextless" (buffer: []u8, timestamp_scale: f64) -> (header_size: u32, ok: bool) #optional_ok {
 	header_size = size_of(Manual_Header)
-	if header_size > len(buffer) {
+	if header_size > u32(len(buffer)) {
 		return 0, false
 	}
 
 	hdr := (^Manual_Header)(raw_data(buffer))
 	hdr.magic = MANUAL_MAGIC
-	hdr.version = 1
+	hdr.version = 2
 	hdr.timestamp_scale = f64le(timestamp_scale)
 	hdr.reserved = 0
 	ok = true
 	return
 }
 
-_build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts: f64, tid: u32, pid: u32) -> (event_size: int, ok: bool) #optional_ok {
+_build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts: f64) -> (event_size: u32, ok: bool) #optional_ok {
 	ev := (^Begin_Event)(raw_data(buffer))
 	name_len := min(len(name), 255)
 	args_len := min(len(args), 255)
 
-	event_size = size_of(Begin_Event) + name_len + args_len
-	if event_size > len(buffer) {
+	event_size = u32(size_of(Begin_Event) + name_len + args_len)
+	if event_size > u32(len(buffer)) {
 		return 0, false
 	}
 
 	ev.type = .Begin
-	ev.pid  = u32le(pid)
-	ev.tid  = u32le(tid)
 	ev.ts   = f64le(ts)
 	ev.name_len = u8(name_len)
 	ev.args_len = u8(args_len)
@@ -187,36 +198,33 @@ _build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts
 	return
 }
 
-_build_end :: proc "contextless" (buffer: []u8, ts: f64, tid: u32, pid: u32) -> (event_size: int, ok: bool) #optional_ok {
+_build_end :: proc "contextless" (buffer: []u8, ts: f64) -> (event_size: u32, ok: bool) #optional_ok {
 	ev := (^End_Event)(raw_data(buffer))
 	event_size = size_of(End_Event)
-	if event_size > len(buffer) {
+	if event_size > u32(len(buffer)) {
 		return 0, false
 	}
 
 	ev.type = .End
-	ev.pid  = u32le(pid)
-	ev.tid  = u32le(tid)
 	ev.ts   = f64le(ts)
 	ok = true
 
 	return
 }
 
-_buffer_begin :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "", location := #caller_location) {
-	if buffer.head + BEGIN_EVENT_MAX > len(buffer.data) {
+_buffer_begin :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") {
+	if int(buffer.head) + BEGIN_EVENT_MAX > len(buffer.data) {
 		buffer_flush(ctx, buffer)
 	}
-	name := location.procedure if name == "" else name
-	buffer.head += _build_begin(buffer.data[buffer.head:], name, args, _trace_now(ctx), buffer.tid, buffer.pid)
+	buffer.head += _build_begin(buffer.data[buffer.head:], name, args, _trace_now(ctx))
 }
 
 _buffer_end :: proc(ctx: ^Context, buffer: ^Buffer) {
 	ts := _trace_now(ctx)
 
-	if buffer.head + size_of(End_Event) > len(buffer.data) {
+	if int(buffer.head) + size_of(End_Event) > len(buffer.data) {
 		buffer_flush(ctx, buffer)
 	}
 
-	buffer.head += _build_end(buffer.data[buffer.head:], ts, buffer.tid, buffer.pid)
+	buffer.head += _build_end(buffer.data[buffer.head:], ts)
 }
