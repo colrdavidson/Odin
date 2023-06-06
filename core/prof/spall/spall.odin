@@ -112,11 +112,11 @@ buffer_create :: proc(data: []byte, tid: u32 = 0) -> (buffer: Buffer, ok: bool) 
 buffer_flush :: proc(ctx: ^Context, buffer: ^Buffer) {
 	start := _trace_now(ctx)
 	header := Buffer_Header{
-		size = u32le(buffer.head),
+		size = u32le(buffer.head - size_of(Buffer_Header)),
 		tid = u32le(buffer.tid),
 	}
 
-	mem.copy(raw_data(buffer.data[:size_of(Buffer_Header)]), &header, size_of(header))
+	mem.copy(raw_data(buffer.data[:size_of(header)]), &header, size_of(header))
 	os.write(ctx.fd, buffer.data[:buffer.head])
 	buffer.head = size_of(Buffer_Header)
 	end := _trace_now(ctx)
