@@ -34,7 +34,7 @@ Manual_Event_Type :: enum u8 {
 Begin_Event :: struct #packed {
 	type:     Manual_Event_Type,
 	category: u8,
-	ts:       f64le,
+	ts:       u64le,
 	name_len: u8,
 	args_len: u8,
 }
@@ -42,7 +42,7 @@ BEGIN_EVENT_MAX :: size_of(Begin_Event) + 255 + 255
 
 End_Event :: struct #packed {
 	type: Manual_Event_Type,
-	ts:   f64le,
+	ts:   u64le,
 }
 
 Pad_Skip :: struct #packed {
@@ -85,7 +85,7 @@ context_create_with_scale :: proc(filename: string, precise_time: bool, timestam
 
 context_create_with_sleep :: proc(filename: string, sleep := 2 * time.Second) -> (ctx: Context, ok: bool) #optional_ok {
 	freq, freq_ok := time.tsc_frequency(sleep)
-	timestamp_scale: f64 = ((1 / f64(freq)) * 1_000_000) if freq_ok else 1
+	timestamp_scale: f64 = ((1 / f64(freq)) * 1_000_000_000) if freq_ok else 1
 	return context_create_with_scale(filename, freq_ok, timestamp_scale)
 }
 
@@ -109,7 +109,7 @@ buffer_create :: proc(data: []byte, tid: u32 = 0) -> (buffer: Buffer, ok: bool) 
 	return
 }
 
-buffer_flush :: proc(ctx: ^Context, buffer: ^Buffer) {
+buffer_flush :: #force_inline proc(ctx: ^Context, buffer: ^Buffer) #no_bounds_check {
 	start := _trace_now(ctx)
 	header := Buffer_Header{
 		size = u32le(buffer.head - size_of(Buffer_Header)),
@@ -121,8 +121,8 @@ buffer_flush :: proc(ctx: ^Context, buffer: ^Buffer) {
 	buffer.head = size_of(Buffer_Header)
 	end := _trace_now(ctx)
 
-	buffer.head += _build_begin(buffer.data[buffer.head:], "Spall Trace Buffer Flush", "", start)
-	buffer.head += _build_end(buffer.data[buffer.head:], end)
+	buffer.head += u32(_build_begin(buffer.data[buffer.head:], "Spall Trace Buffer Flush", "", start))
+	buffer.head += u32(_build_end(buffer.data[buffer.head:], end))
 }
 
 buffer_destroy :: proc(ctx: ^Context, buffer: ^Buffer) {
@@ -132,34 +132,34 @@ buffer_destroy :: proc(ctx: ^Context, buffer: ^Buffer) {
 
 
 @(deferred_in=_scoped_event_end)
-SCOPED_EVENT :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") -> bool {
+SCOPED_EVENT :: #force_inline proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") -> bool {
 	_buffer_begin(ctx, buffer, name, args)
 	return true
 }
 
 @(deferred_in=_scoped_function_end)
-SCOPED_FUNCTION :: proc(ctx: ^Context, buffer: ^Buffer, args: string = "", location := #caller_location) -> bool {
+SCOPED_FUNCTION :: #force_inline proc(ctx: ^Context, buffer: ^Buffer, args: string = "", location := #caller_location) -> bool {
 	_buffer_begin(ctx, buffer, location.procedure, args)
 	return true
 }
 
 @(private)
-_scoped_event_end :: proc(ctx: ^Context, buffer: ^Buffer, _, _: string) {
+_scoped_event_end :: #force_inline proc(ctx: ^Context, buffer: ^Buffer, _, _: string) {
 	_buffer_end(ctx, buffer)
 }
 
 @(private)
-_scoped_function_end :: proc(ctx: ^Context, buffer: ^Buffer, _: string, _ := #caller_location) {
+_scoped_function_end :: #force_inline proc(ctx: ^Context, buffer: ^Buffer, _: string, _ := #caller_location) {
 	_buffer_end(ctx, buffer)
 }
 
 
-_trace_now :: proc "contextless" (ctx: ^Context) -> f64 {
+_trace_now :: #force_inline proc "contextless" (ctx: ^Context) -> u64 {
 	if !ctx.precise_time {
-		return f64(time.tick_now()._nsec) / 1_000
+		return u64(time.tick_now()._nsec)
 	}
 
-	return f64(intrinsics.read_cycle_counter())
+	return u64(intrinsics.read_cycle_counter())
 }
 
 _build_header :: proc "contextless" (buffer: []u8, timestamp_scale: f64) -> (header_size: u32, ok: bool) #optional_ok {
@@ -177,18 +177,18 @@ _build_header :: proc "contextless" (buffer: []u8, timestamp_scale: f64) -> (hea
 	return
 }
 
-_build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts: f64) -> (event_size: u32, ok: bool) #optional_ok {
+_build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts: u64) -> (event_size: int, ok: bool) #optional_ok #no_bounds_check {
 	ev := (^Begin_Event)(raw_data(buffer))
 	name_len := min(len(name), 255)
 	args_len := min(len(args), 255)
 
-	event_size = u32(size_of(Begin_Event) + name_len + args_len)
-	if event_size > u32(len(buffer)) {
+	event_size = size_of(Begin_Event) + name_len + args_len
+	if event_size > len(buffer) {
 		return 0, false
 	}
 
 	ev.type = .Begin
-	ev.ts   = f64le(ts)
+	ev.ts   = u64le(ts)
 	ev.name_len = u8(name_len)
 	ev.args_len = u8(args_len)
 	mem.copy(raw_data(buffer[size_of(Begin_Event):]), raw_data(name), name_len)
@@ -198,33 +198,33 @@ _build_begin :: proc "contextless" (buffer: []u8, name: string, args: string, ts
 	return
 }
 
-_build_end :: proc "contextless" (buffer: []u8, ts: f64) -> (event_size: u32, ok: bool) #optional_ok {
+_build_end :: proc "contextless" (buffer: []u8, ts: u64) -> (event_size: int, ok: bool) #optional_ok #no_bounds_check {
 	ev := (^End_Event)(raw_data(buffer))
 	event_size = size_of(End_Event)
-	if event_size > u32(len(buffer)) {
+	if event_size > len(buffer) {
 		return 0, false
 	}
 
 	ev.type = .End
-	ev.ts   = f64le(ts)
+	ev.ts   = u64le(ts)
 	ok = true
 
 	return
 }
 
-_buffer_begin :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") {
+_buffer_begin :: proc(ctx: ^Context, buffer: ^Buffer, name: string, args: string = "") #no_bounds_check {
 	if int(buffer.head) + BEGIN_EVENT_MAX > len(buffer.data) {
 		buffer_flush(ctx, buffer)
 	}
-	buffer.head += _build_begin(buffer.data[buffer.head:], name, args, _trace_now(ctx))
+	buffer.head += u32(_build_begin(buffer.data[buffer.head:], name, args, _trace_now(ctx)))
 }
 
-_buffer_end :: proc(ctx: ^Context, buffer: ^Buffer) {
+_buffer_end :: proc(ctx: ^Context, buffer: ^Buffer) #no_bounds_check {
 	ts := _trace_now(ctx)
 
 	if int(buffer.head) + size_of(End_Event) > len(buffer.data) {
 		buffer_flush(ctx, buffer)
 	}
 
-	buffer.head += _build_end(buffer.data[buffer.head:], ts)
+	buffer.head += u32(_build_end(buffer.data[buffer.head:], ts))
 }
