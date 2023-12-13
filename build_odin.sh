@@ -114,7 +114,7 @@ build_odin() {
 	esac
 
 	set -x
-	$CXX src/main.cpp src/libtommath.cpp $DISABLED_WARNINGS $CPPFLAGS $CXXFLAGS $EXTRAFLAGS $LDFLAGS -o odin
+	$CXX src/main.cpp src/libtommath.cpp $DISABLED_WARNINGS $CPPFLAGS $CXXFLAGS -finstrument-functions -rdynamic $EXTRAFLAGS $LDFLAGS -o odin
 	set +x
 }
 

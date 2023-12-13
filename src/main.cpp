@@ -1,3 +1,5 @@
+#include "spall_native_auto.h"
+
 // #define NO_ARRAY_BOUNDS_CHECK
 #include "common.cpp"
 #include "timings.cpp"
@@ -2311,6 +2313,19 @@ gb_internal void init_terminal(void) {
 	}
 }
 
+#if defined(__clang__)
+__attribute__((constructor))
+void spall_start() {
+	spall_auto_init((char *)"odin.spall");
+	spall_auto_thread_init(0, SPALL_DEFAULT_BUFFER_SIZE);
+}
+__attribute__((destructor))
+void spall_end() {
+	spall_auto_thread_quit();
+	spall_auto_quit();
+}
+#endif
+
 int main(int arg_count, char const **arg_ptr) {
 	if (arg_count < 2) {
 		usage(make_string_c(arg_ptr[0]));
@@ -2705,3 +2720,6 @@ int main(int arg_count, char const **arg_ptr) {
 	}
 	return 0;
 }
+
+#define SPALL_AUTO_IMPLEMENTATION
+#include "spall_native_auto.h"
