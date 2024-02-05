@@ -648,6 +648,10 @@ Window_contentView :: proc "c" (self: ^Window) -> ^View {
 Window_setContentView :: proc "c" (self: ^Window, content_view: ^View) {
 	msgSend(nil, self, "setContentView:", content_view)
 }
+@(objc_type=Window, objc_name="makeFirstResponder")
+Window_makeFirstResponder :: proc "c" (self: ^Window, content_view: ^View) {
+	msgSend(nil, self, "makeFirstResponder:", content_view)
+}
 @(objc_type=Window, objc_name="contentLayoutRect")
 Window_contentLayoutRect :: proc "c" (self: ^Window) -> Rect {
 	return msgSend(Rect, self, "contentLayoutRect")
