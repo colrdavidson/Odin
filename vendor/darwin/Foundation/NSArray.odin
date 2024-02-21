@@ -12,6 +12,11 @@ Array_alloc :: proc "c" () -> ^Array {
 	return msgSend(^Array, Array, "alloc")
 }
 
+@(objc_type=Array, objc_name="arrayWithObject")
+Array_arrayWithObject :: proc "c" (obj: ^Object) -> ^Array {
+	return msgSend(^Array, Array, "arrayWithObjects:count:", obj, UInteger(1))
+}
+
 @(objc_type=Array, objc_name="init")
 Array_init :: proc "c" (self: ^Array) -> ^Array {
 	return msgSend(^Array, self, "init")

@@ -1,8 +1,9 @@
 package objc_Foundation
 
+import "core:c"
+
 @(objc_class="NSEvent")
 Event :: struct {using _: Object}
-
 
 
 EventMask :: distinct bit_set[EventType; UInteger]
@@ -31,6 +32,7 @@ when size_of(UInteger) == 4 {
 		Rotate             = 18,
 		BeginGesture       = 19,
 		EndGesture         = 20,
+		AppleEvent         = 21,
 		ScrollWheel        = 22,
 		TabletPoint        = 23,
 		TabletProximity    = 24,
@@ -63,6 +65,7 @@ when size_of(UInteger) == 4 {
 		Rotate             = 18,
 		BeginGesture       = 19,
 		EndGesture         = 20,
+		AppleEvent         = 21,
 		ScrollWheel        = 22,
 		TabletPoint        = 23,
 		TabletProximity    = 24,
@@ -78,6 +81,14 @@ when size_of(UInteger) == 4 {
 		DirectTouch        = 37,
 		ChangeMode         = 38,
 	}
+}
+
+EventAppKitSubtype :: enum c.short {
+	WindowExposed          = 0,
+	ApplicationActivated   = 1,
+	ApplicationDeactivated = 2,
+	WindowMoved            = 4,
+	ScreenChanged          = 8,
 }
 
 EventPhase :: distinct bit_set[EventPhaseFlag; UInteger]

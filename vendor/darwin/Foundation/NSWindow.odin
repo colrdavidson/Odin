@@ -56,6 +56,17 @@ BackingStoreType :: enum UInteger {
 	Buffered    = 2,
 }
 
+DragOperation :: enum UInteger {
+	None    = 0,
+	Copy    = 1,
+	Link    = 2,
+	Generic = 4,
+	Private = 8,
+	Move    = 16,
+	Delete  = 32,
+	Max     = max(UInteger),
+}
+
 WindowDelegateTemplate :: struct {
 	// Managing Sheets
 	windowWillPositionSheetUsingRect:                                    proc(window: ^Window, sheet: ^Window, rect: Rect) -> Rect,
@@ -127,6 +138,8 @@ WindowDelegateTemplate :: struct {
 	windowDidEnterVersionBrowser:                                        proc(notification: ^Notification),
 	windowWillExitVersionBrowser:                                        proc(notification: ^Notification),
 	windowDidExitVersionBrowser:                                         proc(notification: ^Notification),
+
+	draggingEntered: proc() -> DragOperation,
 }
 
 
@@ -549,6 +562,14 @@ window_delegate_register_and_alloc :: proc(template: WindowDelegateTemplate, cla
 		}
 		class_addMethod(class, intrinsics.objc_find_selector("windowDidExitVersionBrowser:"), auto_cast windowDidExitVersionBrowser, "v@:@")
 	}
+	if template.draggingEntered != nil {
+		draggingEntered :: proc "c" (self: id) -> DragOperation {
+			del := cast(^_WindowDelegateInternal)object_getIndexedIvars(self)
+			context = del._context
+			return del.draggingEntered()
+		}
+		class_addMethod(class, intrinsics.objc_find_selector("draggingEntered:"), auto_cast draggingEntered, "L@:@")
+	}
 
 	objc_registerClassPair(class)
 	del := class_createInstance(class, size_of(_WindowDelegateInternal))
@@ -626,14 +647,14 @@ Window_alloc :: proc "c" () -> ^Window {
 }
 
 @(objc_type=Window, objc_name="initWithContentRect")
-Window_initWithContentRect :: proc (self: ^Window, contentRect: Rect, styleMask: WindowStyleMask, backing: BackingStoreType, doDefer: BOOL) -> ^Window {
+Window_initWithContentRect :: proc (self: ^Window, contentRect: Rect, styleMask: WindowStyleMask, backing: BackingStoreType, doDefer: BOOL, screen: ^Screen) -> ^Window {
 	self := self
 	// HACK: due to a compiler bug, the generated calling code does not
 	// currently work for this message. Has to do with passing a struct along
 	// with other parameters, so we don't send the rect here.
 	// Omiting the rect argument here actually works, because of how the C
 	// calling conventions are defined.
-	self = msgSend(^Window, self, "initWithContentRect:styleMask:backing:defer:", styleMask, backing, doDefer)
+	self = msgSend(^Window, self, "initWithContentRect:styleMask:backing:defer:screen:", styleMask, backing, doDefer, screen)
 
 	// apply the contentRect now, since we did not pass it to the init call
 	msgSend(nil, self, "setContentSize:", contentRect.size)
@@ -708,6 +729,10 @@ Window_setStyleMask :: proc "c" (self: ^Window, style_mask: WindowStyleMask) {
 Window_close :: proc "c" (self: ^Window) {
 	msgSend(nil, self, "close")
 }
+@(objc_type=Window, objc_name="center")
+Window_center :: proc "c" (self: ^Window) {
+	msgSend(nil, self, "center")
+}
 @(objc_type=Window, objc_name="setDelegate")
 Window_setDelegate :: proc "c" (self: ^Window, delegate: ^WindowDelegate) {
 	msgSend(nil, self, "setDelegate:", delegate)
@@ -715,4 +740,9 @@ Window_setDelegate :: proc "c" (self: ^Window, delegate: ^WindowDelegate) {
 @(objc_type=Window, objc_name="backingScaleFactor")
 Window_backingScaleFactor :: proc "c" (self: ^Window) -> Float {
 	return msgSend(Float, self, "backingScaleFactor")
+}
+
+@(objc_type=Window, objc_name="registerForDraggedTypes")
+Window_registerForDraggedTypes :: proc "c" (self: ^Window, new_types: ^Array) {
+	msgSend(nil, self, "registerForDraggedTypes:", new_types)
 }
