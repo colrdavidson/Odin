@@ -106,6 +106,7 @@ TOKEN_KIND(Token__KeywordBegin, ""), \
 	TOKEN_KIND(Token_union,       "union"),       \
 	TOKEN_KIND(Token_enum,        "enum"),        \
 	TOKEN_KIND(Token_bit_set,     "bit_set"),     \
+	TOKEN_KIND(Token_bit_field,   "bit_field"),   \
 	TOKEN_KIND(Token_map,         "map"),         \
 	TOKEN_KIND(Token_dynamic,     "dynamic"),     \
 	TOKEN_KIND(Token_auto_cast,   "auto_cast"),   \
@@ -192,6 +193,7 @@ gb_internal void init_keyword_hash_table(void) {
 
 gb_global Array<String>           global_file_path_strings; // index is file id
 gb_global Array<struct AstFile *> global_files; // index is file id
+gb_global BlockingMutex           global_files_mutex;
 
 gb_internal String   get_file_path_string(i32 index);
 gb_internal struct AstFile *thread_safe_get_ast_file_from_id(i32 index);
@@ -765,9 +767,8 @@ gb_internal void tokenizer_get_token(Tokenizer *t, Token *token, int repeat=0) {
 				}
 			}
 
-			// TODO(bill): Better Error Handling
 			if (valid && n != 1) {
-				tokenizer_err(t, "Invalid rune literal");
+				tokenizer_err(t, token->pos, "Invalid rune literal");
 			}
 			token->string.len = t->curr - token->string.text;
 			goto semicolon_check;

@@ -86,11 +86,8 @@ gb_global Timings global_timings = {0};
 
 #if defined(GB_SYSTEM_OSX)
 	#include <llvm/Config/llvm-config.h>
-	#if LLVM_VERSION_MAJOR < 11
-	#error LLVM Version 11+ is required => "brew install llvm@11"
-	#endif
-	#if (LLVM_VERSION_MAJOR > 14 && LLVM_VERSION_MAJOR < 17) || LLVM_VERSION_MAJOR > 17
-	#error LLVM Version 11..=14 or =17 is required => "brew install llvm@14"
+	#if LLVM_VERSION_MAJOR < 11 || (LLVM_VERSION_MAJOR > 14 && LLVM_VERSION_MAJOR < 17) || LLVM_VERSION_MAJOR > 18
+	#error LLVM Version 11..=14 or =18 is required => "brew install llvm@14"
 	#endif
 #endif
 
@@ -198,7 +195,12 @@ gb_internal void print_usage_line(i32 indent, char const *fmt, ...) {
 	gb_printf("\n");
 }
 
-gb_internal void usage(String argv0) {
+gb_internal void usage(String argv0, String argv1 = {}) {
+	if (argv1 == "run.") {
+		print_usage_line(0, "Did you mean 'odin run .'?");
+	} else if (argv1 == "build.") {
+		print_usage_line(0, "Did you mean 'odin build .'?");
+	}
 	print_usage_line(0, "%.*s is a tool for managing Odin source code.", LIT(argv0));
 	print_usage_line(0, "Usage:");
 	print_usage_line(1, "%.*s command [arguments]", LIT(argv0));
@@ -212,6 +214,7 @@ gb_internal void usage(String argv0) {
 	print_usage_line(1, "doc               Generates documentation on a directory of .odin files.");
 	print_usage_line(1, "version           Prints version.");
 	print_usage_line(1, "report            Prints information useful to reporting a bug.");
+	print_usage_line(1, "root              Prints the root path where Odin looks for the builtin collections.");
 	print_usage_line(0, "");
 	print_usage_line(0, "For further details on a command, invoke command help:");
 	print_usage_line(1, "e.g. `odin build -help` or `odin help build`");
@@ -242,6 +245,7 @@ enum BuildFlagKind {
 	BuildFlag_Debug,
 	BuildFlag_DisableAssert,
 	BuildFlag_NoBoundsCheck,
+	BuildFlag_NoTypeAssert,
 	BuildFlag_NoDynamicLiterals,
 	BuildFlag_NoCRT,
 	BuildFlag_NoEntryPoint,
@@ -253,6 +257,8 @@ enum BuildFlagKind {
 	BuildFlag_Vet,
 	BuildFlag_VetShadowing,
 	BuildFlag_VetUnused,
+	BuildFlag_VetUnusedImports,
+	BuildFlag_VetUnusedVariables,
 	BuildFlag_VetUsingStmt,
 	BuildFlag_VetUsingParam,
 	BuildFlag_VetStyle,
@@ -263,6 +269,7 @@ enum BuildFlagKind {
 	BuildFlag_ExtraAssemblerFlags,
 	BuildFlag_Microarch,
 	BuildFlag_TargetFeatures,
+	BuildFlag_StrictTargetFeatures,
 	BuildFlag_MinimumOSVersion,
 	BuildFlag_NoThreadLocal,
 
@@ -292,8 +299,11 @@ enum BuildFlagKind {
 	BuildFlag_WarningsAsErrors,
 	BuildFlag_TerseErrors,
 	BuildFlag_VerboseErrors,
+	BuildFlag_JsonErrors,
 	BuildFlag_ErrorPosStyle,
 	BuildFlag_MaxErrorCount,
+
+	BuildFlag_MinLinkLibs,
 
 	// internal use only
 	BuildFlag_InternalIgnoreLazy,
@@ -330,12 +340,12 @@ struct BuildFlag {
 	String             name;
 	BuildFlagParamKind param_kind;
 	u32                command_support;
-	bool               allow_mulitple;
+	bool               allow_multiple;
 };
 
 
-gb_internal void add_flag(Array<BuildFlag> *build_flags, BuildFlagKind kind, String name, BuildFlagParamKind param_kind, u32 command_support, bool allow_mulitple=false) {
-	BuildFlag flag = {kind, name, param_kind, command_support, allow_mulitple};
+gb_internal void add_flag(Array<BuildFlag> *build_flags, BuildFlagKind kind, String name, BuildFlagParamKind param_kind, u32 command_support, bool allow_multiple=false) {
+	BuildFlag flag = {kind, name, param_kind, command_support, allow_multiple};
 	array_add(build_flags, flag);
 }
 
@@ -430,6 +440,7 @@ gb_internal bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_Debug,                   str_lit("debug"),                     BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_DisableAssert,           str_lit("disable-assert"),            BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_NoBoundsCheck,           str_lit("no-bounds-check"),           BuildFlagParam_None,    Command__does_check);
+	add_flag(&build_flags, BuildFlag_NoTypeAssert,            str_lit("no-type-assert"),            BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_NoThreadLocal,           str_lit("no-thread-local"),           BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_NoDynamicLiterals,       str_lit("no-dynamic-literals"),       BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_NoCRT,                   str_lit("no-crt"),                    BuildFlagParam_None,    Command__does_build);
@@ -441,6 +452,8 @@ gb_internal bool parse_build_flags(Array<String> args) {
 
 	add_flag(&build_flags, BuildFlag_Vet,                     str_lit("vet"),                       BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_VetUnused,               str_lit("vet-unused"),                BuildFlagParam_None,    Command__does_check);
+	add_flag(&build_flags, BuildFlag_VetUnusedVariables,      str_lit("vet-unused-variables"),      BuildFlagParam_None,    Command__does_check);
+	add_flag(&build_flags, BuildFlag_VetUnusedImports,        str_lit("vet-unused-imports"),        BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_VetShadowing,            str_lit("vet-shadowing"),             BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_VetUsingStmt,            str_lit("vet-using-stmt"),            BuildFlagParam_None,    Command__does_check);
 	add_flag(&build_flags, BuildFlag_VetUsingParam,           str_lit("vet-using-param"),           BuildFlagParam_None,    Command__does_check);
@@ -452,6 +465,7 @@ gb_internal bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_ExtraAssemblerFlags,     str_lit("extra-assembler-flags"),     BuildFlagParam_String,  Command__does_build);
 	add_flag(&build_flags, BuildFlag_Microarch,               str_lit("microarch"),                 BuildFlagParam_String,  Command__does_build);
 	add_flag(&build_flags, BuildFlag_TargetFeatures,          str_lit("target-features"),           BuildFlagParam_String,  Command__does_build);
+	add_flag(&build_flags, BuildFlag_StrictTargetFeatures,    str_lit("strict-target-features"),    BuildFlagParam_None,    Command__does_build);
 	add_flag(&build_flags, BuildFlag_MinimumOSVersion,        str_lit("minimum-os-version"),        BuildFlagParam_String,  Command__does_build);
 
 	add_flag(&build_flags, BuildFlag_RelocMode,               str_lit("reloc-mode"),                BuildFlagParam_String,  Command__does_build);
@@ -480,8 +494,11 @@ gb_internal bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_WarningsAsErrors,        str_lit("warnings-as-errors"),        BuildFlagParam_None,    Command_all);
 	add_flag(&build_flags, BuildFlag_TerseErrors,             str_lit("terse-errors"),              BuildFlagParam_None,    Command_all);
 	add_flag(&build_flags, BuildFlag_VerboseErrors,           str_lit("verbose-errors"),            BuildFlagParam_None,    Command_all);
+	add_flag(&build_flags, BuildFlag_JsonErrors,              str_lit("json-errors"),               BuildFlagParam_None,    Command_all);
 	add_flag(&build_flags, BuildFlag_ErrorPosStyle,           str_lit("error-pos-style"),           BuildFlagParam_String,  Command_all);
 	add_flag(&build_flags, BuildFlag_MaxErrorCount,           str_lit("max-error-count"),           BuildFlagParam_Integer, Command_all);
+
+	add_flag(&build_flags, BuildFlag_MinLinkLibs,             str_lit("min-link-libs"),             BuildFlagParam_None,    Command__does_build);
 
 	add_flag(&build_flags, BuildFlag_InternalIgnoreLazy,      str_lit("internal-ignore-lazy"),      BuildFlagParam_None,    Command_all);
 	add_flag(&build_flags, BuildFlag_InternalIgnoreLLVMBuild, str_lit("internal-ignore-llvm-build"),BuildFlagParam_None,    Command_all);
@@ -972,6 +989,8 @@ gb_internal bool parse_build_flags(Array<String> args) {
 								build_context.build_mode = BuildMode_DynamicLibrary;
 							} else if (str == "obj" || str == "object") {
 								build_context.build_mode = BuildMode_Object;
+							} else if (str == "static" || str == "lib") {
+								build_context.build_mode = BuildMode_StaticLibrary;
 							} else if (str == "exe") {
 								build_context.build_mode = BuildMode_Executable;
 							} else if (str == "asm" || str == "assembly" || str == "assembler") {
@@ -982,6 +1001,7 @@ gb_internal bool parse_build_flags(Array<String> args) {
 								gb_printf_err("Unknown build mode '%.*s'\n", LIT(str));
 								gb_printf_err("Valid build modes:\n");
 								gb_printf_err("\tdll, shared, dynamic\n");
+								gb_printf_err("\tlib, static\n");
 								gb_printf_err("\tobj, object\n");
 								gb_printf_err("\texe\n");
 								gb_printf_err("\tasm, assembly, assembler\n");
@@ -1002,6 +1022,9 @@ gb_internal bool parse_build_flags(Array<String> args) {
 						case BuildFlag_NoBoundsCheck:
 							build_context.no_bounds_check = true;
 							break;
+						case BuildFlag_NoTypeAssert:
+							build_context.no_type_assert = true;
+							break;
 						case BuildFlag_NoDynamicLiterals:
 							build_context.no_dynamic_literals = true;
 							break;
@@ -1020,10 +1043,9 @@ gb_internal bool parse_build_flags(Array<String> args) {
 						case BuildFlag_UseSeparateModules:
 							build_context.use_separate_modules = true;
 							break;
-						case BuildFlag_NoThreadedChecker: {
+						case BuildFlag_NoThreadedChecker:
 							build_context.no_threaded_checker = true;
 							break;
-						}
 						case BuildFlag_ShowDebugMessages:
 							build_context.show_debug_messages = true;
 							break;
@@ -1031,12 +1053,14 @@ gb_internal bool parse_build_flags(Array<String> args) {
 							build_context.vet_flags |= VetFlag_All;
 							break;
 
-						case BuildFlag_VetUnused:     build_context.vet_flags |= VetFlag_Unused;     break;
-						case BuildFlag_VetShadowing:  build_context.vet_flags |= VetFlag_Shadowing;  break;
-						case BuildFlag_VetUsingStmt:  build_context.vet_flags |= VetFlag_UsingStmt;  break;
-						case BuildFlag_VetUsingParam: build_context.vet_flags |= VetFlag_UsingParam; break;
-						case BuildFlag_VetStyle:      build_context.vet_flags |= VetFlag_Style;      break;
-						case BuildFlag_VetSemicolon:  build_context.vet_flags |= VetFlag_Semicolon;  break;
+						case BuildFlag_VetUnusedVariables: build_context.vet_flags |= VetFlag_UnusedVariables; break;
+						case BuildFlag_VetUnusedImports:   build_context.vet_flags |= VetFlag_UnusedImports;   break;
+						case BuildFlag_VetUnused:          build_context.vet_flags |= VetFlag_Unused;          break;
+						case BuildFlag_VetShadowing:       build_context.vet_flags |= VetFlag_Shadowing;       break;
+						case BuildFlag_VetUsingStmt:       build_context.vet_flags |= VetFlag_UsingStmt;       break;
+						case BuildFlag_VetUsingParam:      build_context.vet_flags |= VetFlag_UsingParam;      break;
+						case BuildFlag_VetStyle:           build_context.vet_flags |= VetFlag_Style;           break;
+						case BuildFlag_VetSemicolon:       build_context.vet_flags |= VetFlag_Semicolon;       break;
 
 						case BuildFlag_IgnoreUnknownAttributes:
 							build_context.ignore_unknown_attributes = true;
@@ -1061,9 +1085,13 @@ gb_internal bool parse_build_flags(Array<String> args) {
 							string_to_lower(&build_context.target_features_string);
 							break;
 						}
+					    case BuildFlag_StrictTargetFeatures:
+						    build_context.strict_target_features = true;
+						    break;
 						case BuildFlag_MinimumOSVersion: {
 							GB_ASSERT(value.kind == ExactValue_String);
 							build_context.minimum_os_version_string = value.value_string;
+							build_context.minimum_os_version_string_given = true;
 							break;
 						}
 						case BuildFlag_RelocMode: {
@@ -1184,6 +1212,10 @@ gb_internal bool parse_build_flags(Array<String> args) {
 							build_context.terse_errors = false;
 							break;
 
+						case BuildFlag_JsonErrors:
+							build_context.json_errors = true;
+							break;
+
 						case BuildFlag_ErrorPosStyle:
 							GB_ASSERT(value.kind == ExactValue_String);
 
@@ -1207,6 +1239,10 @@ gb_internal bool parse_build_flags(Array<String> args) {
 							}
 							break;
 						}
+
+						case BuildFlag_MinLinkLibs:
+							build_context.min_link_libs = true;
+							break;
 
 						case BuildFlag_InternalIgnoreLazy:
 							build_context.ignore_lazy = true;
@@ -1332,7 +1368,7 @@ gb_internal bool parse_build_flags(Array<String> args) {
 						}
 					}
 
-					if (!bf.allow_mulitple) {
+					if (!bf.allow_multiple) {
 						set_flags[bf.kind] = ok;
 					}
 				}
@@ -1398,7 +1434,7 @@ gb_internal void timings_export_all(Timings *t, Checker *c, bool timings_are_fin
 	gbFileError err = gb_file_open_mode(&f, gbFileMode_Write, fileName);
 	if (err != gbFileError_None) {
 		gb_printf_err("Failed to export timings to: %s\n", fileName);
-		gb_exit(1);
+		exit_with_errors();
 		return;
 	} else {
 		gb_printf("\nExporting timings to '%s'... ", fileName);
@@ -1604,6 +1640,7 @@ gb_internal void remove_temp_files(lbGenerator *gen) {
 
 	switch (build_context.build_mode) {
 	case BuildMode_Executable:
+	case BuildMode_StaticLibrary:
 	case BuildMode_DynamicLibrary:
 		break;
 
@@ -1622,6 +1659,7 @@ gb_internal void remove_temp_files(lbGenerator *gen) {
 	if (!build_context.keep_object_files) {
 		switch (build_context.build_mode) {
 		case BuildMode_Executable:
+		case BuildMode_StaticLibrary:
 		case BuildMode_DynamicLibrary:
 			for (String const &path : gen->output_object_paths) {
 				gb_file_remove(cast(char const *)path.text);
@@ -1800,6 +1838,9 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 		print_usage_line(3, "-build-mode:exe         Builds as an executable.");
 		print_usage_line(3, "-build-mode:dll         Builds as a dynamically linked library.");
 		print_usage_line(3, "-build-mode:shared      Builds as a dynamically linked library.");
+		print_usage_line(3, "-build-mode:lib         Builds as a statically linked library.");
+		print_usage_line(3, "-build-mode:static      Builds as a statically linked library.");
+		print_usage_line(3, "-build-mode:lib         Builds as an static library.");
 		print_usage_line(3, "-build-mode:obj         Builds as an object file.");
 		print_usage_line(3, "-build-mode:object      Builds as an object file.");
 		print_usage_line(3, "-build-mode:assembly    Builds as an assembly file.");
@@ -1827,6 +1868,10 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 
 		print_usage_line(1, "-no-bounds-check");
 		print_usage_line(2, "Disables bounds checking program wide.");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-no-type-assert");
+		print_usage_line(2, "Disables type assertion checking program wide.");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-no-crt");
@@ -1860,12 +1905,22 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Does extra checks on the code.");
 		print_usage_line(2, "Extra checks include:");
 		print_usage_line(3, "-vet-unused");
+		print_usage_line(3, "-vet-unused-variables");
+		print_usage_line(3, "-vet-unused-imports");
 		print_usage_line(3, "-vet-shadowing");
 		print_usage_line(3, "-vet-using-stmt");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-vet-unused");
 		print_usage_line(2, "Checks for unused declarations.");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-vet-unused-variables");
+		print_usage_line(2, "Checks for unused variable declarations.");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-vet-unused-imports");
+		print_usage_line(2, "Checks for unused import declarations.");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-vet-shadowing");
@@ -1919,8 +1974,8 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 	if (run_or_build) {
 		print_usage_line(1, "-minimum-os-version:<string>");
 		print_usage_line(2, "Sets the minimum OS version targeted by the application.");
-		print_usage_line(2, "Example: -minimum-os-version:12.0.0");
-		print_usage_line(2, "(Only used when target is Darwin.)");
+		print_usage_line(2, "Default: -minimum-os-version:11.0.0");
+		print_usage_line(2, "Only used when target is Darwin, if given, linking mismatched versions will emit a warning.");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-extra-linker-flags:<string>");
@@ -1936,7 +1991,20 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Examples:");
 		print_usage_line(3, "-microarch:sandybridge");
 		print_usage_line(3, "-microarch:native");
-		print_usage_line(3, "-microarch:? for a list");
+		print_usage_line(3, "-microarch:\"?\" for a list");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-target-features:<string>");
+		print_usage_line(2, "Specifies CPU features to enable on top of the enabled features implied by -microarch.");
+		print_usage_line(2, "Examples:");
+		print_usage_line(3, "-target-features:atomics");
+		print_usage_line(3, "-target-features:\"sse2,aes\"");
+		print_usage_line(3, "-target-features:\"?\" for a list");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-strict-target-features");
+		print_usage_line(2, "Makes @(enable_target_features=\"...\") behave the same way as @(require_target_features=\"...\").");
+		print_usage_line(2, "This enforces that all generated code uses features supported by the combination of -target, -microarch, and -target-features.");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-reloc-mode:<string>");
@@ -1984,6 +2052,10 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Prints a terse error message without showing the code on that line and the location in that line.");
 		print_usage_line(0, "");
 
+		print_usage_line(1, "-json-errors");
+		print_usage_line(2, "Prints the error messages as json to stderr.");
+		print_usage_line(0, "");
+
 		print_usage_line(1, "-error-pos-style:<string>");
 		print_usage_line(2, "Available options:");
 		print_usage_line(3, "-error-pos-style:unix      file/path:45:3:");
@@ -1995,6 +2067,11 @@ gb_internal void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Sets the maximum number of errors that can be displayed before the compiler terminates.");
 		print_usage_line(2, "Must be an integer >0.");
 		print_usage_line(2, "If not set, the default max error count is %d.", DEFAULT_MAX_ERROR_COLLECTOR_COUNT);
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-min-link-libs");
+		print_usage_line(2, "If set, the number of linked libraries will be minimized to prevent duplications.");
+		print_usage_line(2, "This is useful for so called \"dumb\" linkers compared to \"smart\" linkers.");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-foreign-error-procedures");
@@ -2095,7 +2172,7 @@ gb_internal void print_show_unused(Checker *c) {
 		array_add(&unused, e);
 	}
 
-	gb_sort_array(unused.data, unused.count, cmp_entities_for_printing);
+	array_sort(unused, cmp_entities_for_printing);
 
 	print_usage_line(0, "Unused Package Declarations");
 
@@ -2533,8 +2610,15 @@ int main(int arg_count, char const **arg_ptr) {
 			print_show_help(args[0], args[2]);
 			return 0;
 		}
+	} else if (command == "root") {
+		gb_printf("%.*s", LIT(odin_root_dir()));
+		return 0;
 	} else {
-		usage(args[0]);
+		String argv1 = {};
+		if (args.count > 1) {
+			argv1 = args[1];
+		}
+		usage(args[0], argv1);
 		return 1;
 	}
 
@@ -2602,7 +2686,7 @@ int main(int arg_count, char const **arg_ptr) {
 
 	// Check chosen microarchitecture. If not found or ?, print list.
 	bool print_microarch_list = true;
-	if (build_context.microarch.len == 0) {
+	if (build_context.microarch.len == 0 || build_context.microarch == str_lit("native")) {
 		// Autodetect, no need to print list.
 		print_microarch_list = false;
 	} else {
@@ -2617,6 +2701,11 @@ int main(int arg_count, char const **arg_ptr) {
 				break;
 			}
 		}
+	}
+
+	// Set and check build paths...
+	if (!init_build_paths(init_filename)) {
+		return 1;
 	}
 
 	String default_march = get_default_microarchitecture();
@@ -2642,13 +2731,57 @@ int main(int arg_count, char const **arg_ptr) {
 		return 0;
 	}
 
-	// Set and check build paths...
-	if (!init_build_paths(init_filename)) {
-		return 1;
+	String march = get_final_microarchitecture();
+	String default_features = get_default_features();
+	{
+		String_Iterator it = {default_features, 0};
+		for (;;) {
+			String str = string_split_iterator(&it, ',');
+			if (str == "") break;
+			string_set_add(&build_context.target_features_set, str);
+		}
+	}
+
+	if (build_context.target_features_string.len != 0) {
+		String_Iterator target_it = {build_context.target_features_string, 0};
+		for (;;) {
+			String item = string_split_iterator(&target_it, ',');
+			if (item == "") break;
+
+			String invalid;
+			if (!check_target_feature_is_valid_for_target_arch(item, &invalid) && item != str_lit("help")) {
+				if (item != str_lit("?")) {
+					gb_printf_err("Unkown target feature '%.*s'.\n", LIT(invalid));
+				}
+				gb_printf("Possible -target-features for target %.*s are:\n", LIT(target_arch_names[build_context.metrics.arch]));
+				gb_printf("\n");
+
+				String feature_list = target_features_list[build_context.metrics.arch];
+				String_Iterator it = {feature_list, 0};
+				for (;;) {
+					String str = string_split_iterator(&it, ',');
+					if (str == "") break;
+					if (check_single_target_feature_is_valid(default_features, str)) {
+						if (has_ansi_terminal_colours()) {
+							gb_printf("\t%.*s\x1b[38;5;244m (implied by target microarch %.*s)\x1b[0m\n", LIT(str), LIT(march));
+						} else {
+							gb_printf("\t%.*s (implied by current microarch %.*s)\n", LIT(str), LIT(march));
+						}
+					} else {
+						gb_printf("\t%.*s\n", LIT(str));
+					}
+				}
+
+				return 1;
+			}
+
+			string_set_add(&build_context.target_features_set, item);
+		}
 	}
 
 	if (build_context.show_debug_messages) {
-		debugf("Selected microarch: %.*s\n", LIT(default_march));
+		debugf("Selected microarch: %.*s\n", LIT(march));
+		debugf("Default microarch features: %.*s\n", LIT(default_features));
 		for_array(i, build_context.build_paths) {
 			String build_path = path_to_string(heap_allocator(), build_context.build_paths[i]);
 			debugf("build_paths[%ld]: %.*s\n", i, LIT(build_path));
@@ -2680,7 +2813,11 @@ int main(int arg_count, char const **arg_ptr) {
 	}
 
 	if (any_errors()) {
+		print_all_errors();
 		return 1;
+	}
+	if (any_warnings()) {
+		print_all_errors();
 	}
 
 	MAIN_TIME_SECTION("type check");
@@ -2691,8 +2828,13 @@ int main(int arg_count, char const **arg_ptr) {
 
 	check_parsed_files(checker);
 	if (any_errors()) {
+		print_all_errors();
 		return 1;
 	}
+	if (any_warnings()) {
+		print_all_errors();
+	}
+
 
 	if (build_context.command_kind == Command_strip_semicolon) {
 		return strip_semicolons(parser);
@@ -2732,6 +2874,7 @@ int main(int arg_count, char const **arg_ptr) {
 
 		switch (build_context.build_mode) {
 		case BuildMode_Executable:
+		case BuildMode_StaticLibrary:
 		case BuildMode_DynamicLibrary:
 			i32 result = linker_stage(&linker_data);
 			if (result) {
@@ -2753,6 +2896,7 @@ int main(int arg_count, char const **arg_ptr) {
 		if (lb_generate_code(gen)) {
 			switch (build_context.build_mode) {
 			case BuildMode_Executable:
+			case BuildMode_StaticLibrary:
 			case BuildMode_DynamicLibrary:
 				i32 result = linker_stage(gen);
 				if (result) {

@@ -40,10 +40,10 @@ write :: proc "contextless" (fd: Fd, buf: []u8) -> (int, Errno) {
 */
 open :: proc "contextless" (name: cstring, flags: Open_Flags, mode: Mode = {}) -> (Fd, Errno) {
 	when ODIN_ARCH == .arm64 {
-		ret := syscall(SYS_openat, AT_FDCWD, transmute(uintptr) name, transmute(u32) mode)
+		ret := syscall(SYS_openat, AT_FDCWD, transmute(uintptr) name, transmute(u32) flags, transmute(u32) mode)
 		return errno_unwrap(ret, Fd)
 	} else {
-		ret := syscall(SYS_open, transmute(uintptr) name, transmute(u32) mode)
+		ret := syscall(SYS_open, transmute(uintptr) name, transmute(u32) flags, transmute(u32) mode)
 		return errno_unwrap(ret, Fd)
 	}
 }
@@ -91,10 +91,10 @@ stat :: proc "contextless" (filename: cstring, stat: ^Stat) -> (Errno) {
 */
 fstat :: proc "contextless" (fd: Fd, stat: ^Stat) -> (Errno) {
 	when size_of(int) == 8 {
-		ret := syscall(SYS_fstat, stat)
+		ret := syscall(SYS_fstat, cast(i32) fd, stat)
 		return Errno(-ret)
 	} else {
-		ret := syscall(SYS_fstat64, stat)
+		ret := syscall(SYS_fstat64, cast(i32) fd, stat)
 		return Errno(-ret)
 	}
 }
@@ -487,6 +487,7 @@ connect :: proc "contextless" (sock: Fd, addr: ^$T) -> (Errno)
 where
 	T == Sock_Addr_In ||
 	T == Sock_Addr_In6 ||
+	T == Sock_Addr_Un ||
 	T == Sock_Addr_Any
 {
 	ret := syscall(SYS_connect, sock, addr, size_of(T))
@@ -502,6 +503,7 @@ accept :: proc "contextless" (sock: Fd, addr: ^$T, sockflags: Socket_FD_Flags = 
 where
 	T == Sock_Addr_In ||
 	T == Sock_Addr_In6 ||
+	T == Sock_Addr_Un ||
 	T == Sock_Addr_Any
 {
 	addr_len: i32 = size_of(T)
@@ -514,6 +516,7 @@ recvfrom :: proc "contextless" (sock: Fd, buf: []u8, flags: Socket_Msg, addr: ^$
 where
 	T == Sock_Addr_In ||
 	T == Sock_Addr_In6 ||
+	T == Sock_Addr_Un ||
 	T == Sock_Addr_Any
 {
 	addr_len: i32 = size_of(T)
@@ -531,6 +534,7 @@ sendto :: proc "contextless" (sock: Fd, buf: []u8, flags: Socket_Msg, addr: ^$T)
 where
 	T == Sock_Addr_In ||
 	T == Sock_Addr_In6 ||
+	T == Sock_Addr_Un ||
 	T == Sock_Addr_Any
 {
 	ret := syscall(SYS_sendto, sock, raw_data(buf), len(buf), transmute(i32) flags, addr, size_of(T))
@@ -590,6 +594,7 @@ bind :: proc "contextless" (sock: Fd, addr: ^$T) -> (Errno)
 where
 	T == Sock_Addr_In ||
 	T == Sock_Addr_In6 ||
+	T == Sock_Addr_Un ||
 	T == Sock_Addr_Any
 {
 	ret := syscall(SYS_bind, sock, addr, size_of(T))
@@ -787,8 +792,8 @@ exit :: proc "contextless" (code: i32) -> ! {
 	Wait for the process to change state.
 	Available since Linux 1.0.
 */
-wait4 :: proc "contextless" (pid: Pid, status: ^u32, options: Wait_Options) -> (Pid, Errno) {
-	ret := syscall(SYS_wait4, pid, status, transmute(u32) options)
+wait4 :: proc "contextless" (pid: Pid, status: ^u32, options: Wait_Options, rusage: ^RUsage) -> (Pid, Errno) {
+	ret := syscall(SYS_wait4, pid, status, transmute(u32) options, rusage)
 	return errno_unwrap(ret, Pid)
 }
 
@@ -2314,7 +2319,7 @@ futex :: proc {
 */
 epoll_create :: proc(size: i32 = 1) -> (Fd, Errno) {
 	when ODIN_ARCH != .arm64 {
-		ret := syscall(SYS_epoll_create)
+		ret := syscall(SYS_epoll_create, i32(1))
 		return errno_unwrap(ret, Fd)
 	} else {
 		ret := syscall(SYS_epoll_create1, i32(0))

@@ -1,13 +1,9 @@
 #if defined(GB_SYSTEM_WINDOWS)
-#include "llvm-c/Core.h"
-#include "llvm-c/ExecutionEngine.h"
-#include "llvm-c/Target.h"
-#include "llvm-c/Analysis.h"
-#include "llvm-c/Object.h"
-#include "llvm-c/BitWriter.h"
-#include "llvm-c/DebugInfo.h"
-#include "llvm-c/Transforms/PassBuilder.h"
+#include <llvm-c/Config/llvm-config.h>
 #else
+#include <llvm/Config/llvm-config.h>
+#endif
+
 #include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
@@ -25,7 +21,6 @@
 #include <llvm-c/Transforms/Scalar.h>
 #include <llvm-c/Transforms/Utils.h>
 #include <llvm-c/Transforms/Vectorize.h>
-#endif
 #endif
 
 #if LLVM_VERSION_MAJOR < 11
@@ -84,6 +79,8 @@ enum lbAddrKind {
 
 	lbAddr_Swizzle,
 	lbAddr_SwizzleLarge,
+
+	lbAddr_BitField,
 };
 
 struct lbAddr {
@@ -118,6 +115,11 @@ struct lbAddr {
 			Type *type;
 			Slice<i32> indices;
 		} swizzle_large;
+		struct {
+			Type *type;
+			i64 bit_offset;
+			i64 bit_size;
+		} bitfield;
 	};
 };
 
@@ -191,8 +193,6 @@ struct lbModule {
 	RecursiveMutex debug_values_mutex;
 	PtrMap<void *, LLVMMetadataRef> debug_values; 
 
-	Array<lbIncompleteDebugType> debug_incomplete_types;
-
 	StringMap<lbAddr> objc_classes;
 	StringMap<lbAddr> objc_selectors;
 
@@ -217,7 +217,6 @@ struct lbGenerator : LinkerData {
 	std::atomic<u32> global_array_index;
 	std::atomic<u32> global_generated_index;
 
-	lbProcedure *startup_type_info;
 	lbProcedure *startup_runtime;
 	lbProcedure *cleanup_runtime;
 	lbProcedure *objc_names;
@@ -478,7 +477,7 @@ gb_internal lbValue lb_emit_mul_add(lbProcedure *p, lbValue a, lbValue b, lbValu
 
 gb_internal void lb_fill_slice(lbProcedure *p, lbAddr const &slice, lbValue base_elem, lbValue len);
 
-gb_internal lbValue lb_type_info(lbModule *m, Type *type);
+gb_internal lbValue lb_type_info(lbProcedure *p, Type *type);
 
 gb_internal lbValue lb_find_or_add_entity_string(lbModule *m, String const &str);
 gb_internal lbValue lb_generate_anonymous_proc_lit(lbModule *m, String const &prefix_name, Ast *expr, lbProcedure *parent = nullptr);
@@ -501,7 +500,7 @@ gb_internal lbValue lb_dynamic_map_reserve(lbProcedure *p, lbValue const &map_pt
 gb_internal lbValue lb_find_procedure_value_from_entity(lbModule *m, Entity *e);
 gb_internal lbValue lb_find_value_from_entity(lbModule *m, Entity *e);
 
-gb_internal void lb_store_type_case_implicit(lbProcedure *p, Ast *clause, lbValue value);
+gb_internal void lb_store_type_case_implicit(lbProcedure *p, Ast *clause, lbValue value, bool is_default_case);
 gb_internal lbAddr lb_store_range_stmt_val(lbProcedure *p, Ast *stmt_val, lbValue value);
 gb_internal lbValue lb_emit_source_code_location_const(lbProcedure *p, String const &procedure, TokenPos const &pos);
 gb_internal lbValue lb_const_source_code_location_const(lbModule *m, String const &procedure, TokenPos const &pos);
@@ -577,9 +576,12 @@ gb_internal LLVMTypeRef llvm_array_type(LLVMTypeRef ElementType, uint64_t Elemen
 #endif
 }
 
+
+gb_internal void lb_set_metadata_custom_u64(lbModule *m, LLVMValueRef v_ref, String name, u64 value);
+gb_internal u64 lb_get_metadata_custom_u64(lbModule *m, LLVMValueRef v_ref, String name);
+
 #define LB_STARTUP_RUNTIME_PROC_NAME   "__$startup_runtime"
 #define LB_CLEANUP_RUNTIME_PROC_NAME   "__$cleanup_runtime"
-#define LB_STARTUP_TYPE_INFO_PROC_NAME "__$startup_type_info"
 #define LB_TYPE_INFO_DATA_NAME       "__$type_info_data"
 #define LB_TYPE_INFO_TYPES_NAME      "__$type_info_types_data"
 #define LB_TYPE_INFO_NAMES_NAME      "__$type_info_names_data"
@@ -716,4 +718,4 @@ gb_global char const *llvm_linkage_strings[] = {
 	"linker private weak linkage"
 };
 
-#define ODIN_METADATA_REQUIRE "odin-metadata-require", 21
+#define ODIN_METADATA_IS_PACKED str_lit("odin-is-packed")

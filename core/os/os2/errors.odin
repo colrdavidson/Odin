@@ -13,9 +13,17 @@ General_Error :: enum u32 {
 
 	Timeout,
 
+	Broken_Pipe,
+
+	// Indicates that an attempt to retrieve a file's size was made, but the
+	// file doesn't have a size.
+	No_Size,
+
 	Invalid_File,
 	Invalid_Dir,
 	Invalid_Path,
+
+	Pattern_Has_Separator,
 
 	Unsupported,
 }
@@ -51,10 +59,13 @@ error_string :: proc(ferr: Error) -> string {
 		case .Not_Exist:         return "file does not exist"
 		case .Closed:            return "file already closed"
 		case .Timeout:           return "i/o timeout"
+		case .Broken_Pipe:       return "Broken pipe"
+		case .No_Size:           return "file has no definite size"
 		case .Invalid_File:      return "invalid file"
 		case .Invalid_Dir:       return "invalid directory"
 		case .Invalid_Path:      return "invalid path"
 		case .Unsupported:       return "unsupported"
+		case .Pattern_Has_Separator: return "pattern has separator"
 		}
 	case io.Error:
 		switch e {

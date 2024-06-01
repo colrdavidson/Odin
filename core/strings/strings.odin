@@ -91,8 +91,8 @@ Inputs:
 Returns:
 - res: A string created from the null-terminated byte pointer and length
 */
-string_from_null_terminated_ptr :: proc(ptr: ^byte, len: int) -> (res: string) {
-	s := transmute(string)mem.Raw_String{ptr, len}
+string_from_null_terminated_ptr :: proc(ptr: [^]byte, len: int) -> (res: string) {
+	s := string(ptr[:len])
 	s = truncate_to_byte(s, 0)
 	return s
 }
@@ -809,7 +809,7 @@ _split :: proc(s_, sep: string, sep_save, n_: int, allocator := context.allocato
 			n = l
 		}
 
-		res := make([]string, n, allocator, loc) or_return
+		res = make([]string, n, allocator, loc) or_return
 		for i := 0; i < n-1; i += 1 {
 			_, w := utf8.decode_rune_in_string(s)
 			res[i] = s[:w]

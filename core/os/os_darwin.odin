@@ -448,14 +448,15 @@ foreign libc {
 	@(link_name="write")            _unix_write         :: proc(handle: Handle, buffer: rawptr, count: c.size_t) -> int ---
 	@(link_name="pread")            _unix_pread         :: proc(handle: Handle, buffer: rawptr, count: c.size_t, offset: i64) -> int ---
 	@(link_name="pwrite")           _unix_pwrite        :: proc(handle: Handle, buffer: rawptr, count: c.size_t, offset: i64) -> int ---
-	@(link_name="lseek")            _unix_lseek         :: proc(fs: Handle, offset: int, whence: int) -> int ---
+	@(link_name="lseek")            _unix_lseek         :: proc(fs: Handle, offset: int, whence: c.int) -> int ---
 	@(link_name="gettid")           _unix_gettid        :: proc() -> u64 ---
 	@(link_name="getpagesize")      _unix_getpagesize   :: proc() -> i32 ---
 	@(link_name="stat64")           _unix_stat          :: proc(path: cstring, stat: ^OS_Stat) -> c.int ---
 	@(link_name="lstat64")          _unix_lstat         :: proc(path: cstring, stat: ^OS_Stat) -> c.int ---
 	@(link_name="fstat64")          _unix_fstat         :: proc(fd: Handle, stat: ^OS_Stat) -> c.int ---
 	@(link_name="readlink")         _unix_readlink      :: proc(path: cstring, buf: ^byte, bufsiz: c.size_t) -> c.ssize_t ---
-	@(link_name="access")           _unix_access        :: proc(path: cstring, mask: int) -> int ---
+	@(link_name="access")           _unix_access        :: proc(path: cstring, mask: c.int) -> c.int ---
+        @(link_name="fsync")            _unix_fsync         :: proc(handle: Handle) -> c.int ---
 
 	@(link_name="fdopendir$INODE64") _unix_fdopendir_amd64 :: proc(fd: Handle) -> Dir ---
 	@(link_name="readdir_r$INODE64") _unix_readdir_r_amd64 :: proc(dirp: Dir, entry: ^Dirent, result: ^^Dirent) -> c.int ---
@@ -565,8 +566,8 @@ fchmod :: proc(fd: Handle, mode: u16) -> Errno {
 	return cast(Errno)_unix_fchmod(fd, mode)
 }
 
-close :: proc(fd: Handle) -> bool {
-	return _unix_close(fd) == 0
+close :: proc(fd: Handle) -> Errno {
+	return cast(Errno)_unix_close(fd)
 }
 
 // If you read or write more than `SSIZE_MAX` bytes, most darwin implementations will return `EINVAL`
@@ -638,7 +639,7 @@ write_at :: proc(fd: Handle, data: []byte, offset: i64) -> (int, Errno) {
 seek :: proc(fd: Handle, offset: i64, whence: int) -> (i64, Errno) {
 	assert(fd != -1)
 
-	final_offset := i64(_unix_lseek(fd, int(offset), whence))
+	final_offset := i64(_unix_lseek(fd, int(offset), c.int(whence)))
 	if final_offset == -1 {
 		return 0, 1
 	}
@@ -891,7 +892,11 @@ absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Errno) {
 access :: proc(path: string, mask: int) -> bool {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	cstr := strings.clone_to_cstring(path, context.temp_allocator)
-	return _unix_access(cstr, mask) == 0
+	return _unix_access(cstr, c.int(mask)) == 0
+}
+
+flush :: proc(fd: Handle) -> Errno {
+    return cast(Errno)_unix_fsync(fd)
 }
 
 lookup_env :: proc(key: string, allocator := context.allocator) -> (value: string, found: bool) {

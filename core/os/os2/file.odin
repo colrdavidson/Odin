@@ -5,7 +5,9 @@ import "core:time"
 import "base:runtime"
 
 File :: struct {
-	impl: _File,
+	impl:   _File,
+	stream: io.Stream,
+	user_fstat: Fstat_Callback,
 }
 
 File_Mode :: distinct u32
@@ -50,78 +52,83 @@ stdout: ^File = nil // OS-Specific
 stderr: ^File = nil // OS-Specific
 
 
+@(require_results)
 create :: proc(name: string) -> (^File, Error) {
 	return open(name, {.Read, .Write, .Create}, File_Mode(0o777))
 }
 
+@(require_results)
 open :: proc(name: string, flags := File_Flags{.Read}, perm := File_Mode(0o777)) -> (^File, Error) {
 	return _open(name, flags, perm)
 }
 
+@(require_results)
 new_file :: proc(handle: uintptr, name: string) -> ^File {
 	return _new_file(handle, name)
 }
 
+@(require_results)
 fd :: proc(f: ^File) -> uintptr {
 	return _fd(f)
 }
 
+@(require_results)
 name :: proc(f: ^File) -> string {
 	return _name(f)
 }
 
 close :: proc(f: ^File) -> Error {
 	if f != nil {
-		return io.close(f.impl.stream)
+		return io.close(f.stream)
 	}
 	return nil
 }
 
 seek :: proc(f: ^File, offset: i64, whence: io.Seek_From) -> (ret: i64, err: Error) {
 	if f != nil {
-		return io.seek(f.impl.stream, offset, whence)
+		return io.seek(f.stream, offset, whence)
 	}
 	return 0, .Invalid_File
 }
 
 read :: proc(f: ^File, p: []byte) -> (n: int, err: Error) {
 	if f != nil {
-		return io.read(f.impl.stream, p)
+		return io.read(f.stream, p)
 	}
 	return 0, .Invalid_File
 }
 
 read_at :: proc(f: ^File, p: []byte, offset: i64) -> (n: int, err: Error) {
 	if f != nil {
-		return io.read_at(f.impl.stream, p, offset)
+		return io.read_at(f.stream, p, offset)
 	}
 	return 0, .Invalid_File
 }
 
 write :: proc(f: ^File, p: []byte) -> (n: int, err: Error) {
 	if f != nil {
-		return io.write(f.impl.stream, p)
+		return io.write(f.stream, p)
 	}
 	return 0, .Invalid_File
 }
 
 write_at :: proc(f: ^File, p: []byte, offset: i64) -> (n: int, err: Error) {
 	if f != nil {
-		return io.write_at(f.impl.stream, p, offset)
+		return io.write_at(f.stream, p, offset)
 	}
 	return 0, .Invalid_File
 }
 
 file_size :: proc(f: ^File) -> (n: i64, err: Error) {
 	if f != nil {
-		return io.size(f.impl.stream)
+		return io.size(f.stream)
 	}
 	return 0, .Invalid_File
 }
 
 flush :: proc(f: ^File) -> Error {
 	if f != nil {
-		return io.flush(f.impl.stream)
+		return io.flush(f.stream)
 	}
 	return nil
 }
@@ -199,15 +206,18 @@ fchange_times :: proc(f: ^File, atime, mtime: time.Time) -> Error {
 	return _fchtimes(f, atime, mtime)
 }
 
+@(require_results)
 exists :: proc(path: string) -> bool {
 	return _exists(path)
 }
 
+@(require_results)
 is_file :: proc(path: string) -> bool {
 	return _is_file(path)
 }
 
 is_dir :: is_directory
+@(require_results)
 is_directory :: proc(path: string) -> bool {
 	return _is_dir(path)
 }
@@ -217,8 +227,8 @@ copy_file :: proc(dst_path, src_path: string) -> Error {
 	src := open(src_path) or_return
 	defer close(src)
 
-	info := fstat(src, _file_allocator()) or_return
-	defer file_info_delete(info, _file_allocator())
+	info := fstat(src, file_allocator()) or_return
+	defer file_info_delete(info, file_allocator())
 	if info.is_directory {
 		return .Invalid_File
 	}

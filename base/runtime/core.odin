@@ -177,9 +177,21 @@ Type_Info_Matrix :: struct {
 	row_count:    int,
 	column_count: int,
 	// Total element count = column_count * elem_stride
+	layout: enum u8 {
+		Column_Major, // array of column vectors
+		Row_Major,    // array of row vectors
+	},
 }
 Type_Info_Soa_Pointer :: struct {
 	elem: ^Type_Info,
+}
+Type_Info_Bit_Field :: struct {
+	backing_type: ^Type_Info,
+	names:        []string,
+	types:        []^Type_Info,
+	bit_sizes:    []uintptr,
+	bit_offsets:  []uintptr,
+	tags:         []string,
 }
 
 Type_Info_Flag :: enum u8 {
@@ -223,6 +235,7 @@ Type_Info :: struct {
 		Type_Info_Relative_Multi_Pointer,
 		Type_Info_Matrix,
 		Type_Info_Soa_Pointer,
+		Type_Info_Bit_Field,
 	},
 }
 
@@ -256,21 +269,22 @@ Typeid_Kind :: enum u8 {
 	Relative_Multi_Pointer,
 	Matrix,
 	Soa_Pointer,
+	Bit_Field,
 }
 #assert(len(Typeid_Kind) < 32)
 
-// Typeid_Bit_Field :: bit_field #align(align_of(uintptr)) {
-// 	index:    8*size_of(uintptr) - 8,
-// 	kind:     5, // Typeid_Kind
-// 	named:    1,
-// 	special:  1, // signed, cstring, etc
-// 	reserved: 1,
-// }
-// #assert(size_of(Typeid_Bit_Field) == size_of(uintptr));
+Typeid_Bit_Field :: bit_field uintptr {
+	index:    uintptr     | 8*size_of(uintptr) - 8,
+	kind:     Typeid_Kind | 5, // Typeid_Kind
+	named:    bool        | 1,
+	special:  bool        | 1, // signed, cstring, etc
+	reserved: bool        | 1,
+}
+#assert(size_of(Typeid_Bit_Field) == size_of(uintptr))
 
 // NOTE(bill): only the ones that are needed (not all types)
 // This will be set by the compiler
-type_table: []Type_Info
+type_table: []^Type_Info
 
 args__: []cstring
 
@@ -467,7 +481,9 @@ Raw_Soa_Pointer :: struct {
 		Linux,
 		Essence,
 		FreeBSD,
+		Haiku,
 		OpenBSD,
+		NetBSD,
 		WASI,
 		JS,
 		Freestanding,
@@ -494,6 +510,7 @@ Odin_Arch_Type :: type_of(ODIN_ARCH)
 	Odin_Build_Mode_Type :: enum int {
 		Executable,
 		Dynamic,
+		Static,
 		Object,
 		Assembly,
 		LLVM_IR,
@@ -583,8 +600,9 @@ type_info_core :: proc "contextless" (info: ^Type_Info) -> ^Type_Info {
 	base := info
 	loop: for {
 		#partial switch i in base.variant {
-		case Type_Info_Named:  base = i.base
-		case Type_Info_Enum:   base = i.base
+		case Type_Info_Named:     base = i.base
+		case Type_Info_Enum:      base = i.base
+		case Type_Info_Bit_Field: base = i.backing_type
 		case: break loop
 		}
 	}
@@ -599,7 +617,7 @@ __type_info_of :: proc "contextless" (id: typeid) -> ^Type_Info #no_bounds_check
 	if n < 0 || n >= len(type_table) {
 		n = 0
 	}
-	return &type_table[n]
+	return type_table[n]
 }
 
 when !ODIN_NO_RTTI {

@@ -310,6 +310,8 @@ enum StateFlag : u8 {
 
 enum ViralStateFlag : u8 {
 	ViralStateFlag_ContainsDeferredProcedure = 1<<0,
+	ViralStateFlag_ContainsOrBreak           = 1<<1,
+	ViralStateFlag_ContainsOrReturn          = 1<<2,
 };
 
 
@@ -324,6 +326,7 @@ enum FieldFlag : u32 {
 	FieldFlag_any_int   = 1<<6,
 	FieldFlag_subtype   = 1<<7,
 	FieldFlag_by_ptr    = 1<<8,
+	FieldFlag_no_broadcast = 1<<9, // disallow array programming
 
 	// Internal use by the parser only
 	FieldFlag_Tags      = 1<<10,
@@ -334,7 +337,7 @@ enum FieldFlag : u32 {
 	FieldFlag_Invalid   = 1u<<31,
 
 	// Parameter List Restrictions
-	FieldFlag_Signature = FieldFlag_ellipsis|FieldFlag_using|FieldFlag_no_alias|FieldFlag_c_vararg|FieldFlag_const|FieldFlag_any_int|FieldFlag_by_ptr,
+	FieldFlag_Signature = FieldFlag_ellipsis|FieldFlag_using|FieldFlag_no_alias|FieldFlag_c_vararg|FieldFlag_const|FieldFlag_any_int|FieldFlag_by_ptr|FieldFlag_no_broadcast,
 	FieldFlag_Struct    = FieldFlag_using|FieldFlag_subtype|FieldFlag_Tags,
 };
 
@@ -429,6 +432,7 @@ AST_KIND(_ExprBegin,  "",  bool) \
 		Ast *expr, *selector; \
 		u8 swizzle_count; /*maximum of 4 components, if set, count >= 2*/ \
 		u8 swizzle_indices; /*2 bits per component*/ \
+		bool is_bit_field; \
 	}) \
 	AST_KIND(ImplicitSelectorExpr, "implicit selector expression",    struct { Token token; Ast *selector; }) \
 	AST_KIND(SelectorCallExpr, "selector call expression", struct { \
@@ -627,7 +631,8 @@ AST_KIND(_DeclBegin,      "", bool) \
 	}) \
 	AST_KIND(ForeignImportDecl, "foreign import declaration", struct { \
 		Token    token;           \
-		Slice<Token> filepaths;   \
+		Slice<Ast *> filepaths;   \
+		bool multiple_filepaths;  \
 		Token    library_name;    \
 		String   collection_name; \
 		Slice<String> fullpaths;  \
@@ -649,6 +654,14 @@ AST_KIND(_DeclEnd,   "", bool) \
 		u32              flags;     \
 		CommentGroup *   docs;      \
 		CommentGroup *   comment;   \
+	}) \
+	AST_KIND(BitFieldField, "bit field field", struct { \
+		Ast *         name;     \
+		Ast *         type;     \
+		Ast *         bit_size; \
+		Token         tag;      \
+		CommentGroup *docs;     \
+		CommentGroup *comment;  \
 	}) \
 	AST_KIND(FieldList, "field list", struct { \
 		Token token;       \
@@ -742,6 +755,14 @@ AST_KIND(_TypeBegin, "", bool) \
 		Ast * elem;  \
 		Ast * underlying; \
 	}) \
+	AST_KIND(BitFieldType, "bit field type", struct { \
+		Scope *scope; \
+		Token token; \
+		Ast * backing_type;  \
+		Token open; \
+		Slice<Ast *> fields; /* BitFieldField */ \
+		Token close; \
+	}) \
 	AST_KIND(MapType, "map type", struct { \
 		Token token; \
 		Ast *count; \
@@ -753,6 +774,7 @@ AST_KIND(_TypeBegin, "", bool) \
 		Ast *row_count;    \
 		Ast *column_count; \
 		Ast *elem;         \
+		bool is_row_major; \
 	}) \
 AST_KIND(_TypeEnd,  "", bool)
 

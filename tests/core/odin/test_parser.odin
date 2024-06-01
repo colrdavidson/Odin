@@ -1,9 +1,10 @@
 package test_core_odin_parser
 
-import "core:testing"
 import "core:fmt"
-import "core:os"
+import "core:odin/ast"
 import "core:odin/parser"
+import "core:os"
+import "core:testing"
 
 
 TEST_count := 0
@@ -30,6 +31,7 @@ when ODIN_TEST {
 main :: proc() {
 	t := testing.T{}
 	test_parse_demo(&t)
+	test_parse_bitfield(&t)
 
 	fmt.printf("%v/%v tests successful.\n", TEST_count - TEST_fail, TEST_count)
 	if TEST_fail > 0 {
@@ -47,4 +49,34 @@ test_parse_demo :: proc(t: ^testing.T) {
 	for key, value in pkg.files {
 		expect(t, value.syntax_error_count == 0, fmt.tprintf("%v should contain zero errors", key))
 	}
+}
+
+@test
+test_parse_bitfield :: proc(t: ^testing.T) {
+	file := ast.File{
+		fullpath = "test.odin",
+		src = `
+package main
+
+Foo :: bit_field uint {}
+
+Foo :: bit_field uint {hello: bool | 1}
+
+Foo :: bit_field uint {
+	hello: bool | 1,
+	hello: bool | 5,
+}
+
+// Hellope 1.
+Foo :: bit_field uint {
+	// Hellope 2.
+	hello: bool | 1,
+	hello: bool | 5, // Hellope 3.
+}
+		`,
+	}
+
+	p := parser.default_parser()
+	ok := parser.parse_file(&p, &file)
+	expect(t, ok == true, "bad parse")
 }

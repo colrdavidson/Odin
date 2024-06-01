@@ -89,6 +89,7 @@ gb_internal void check_or_else_split_types(CheckerContext *c, Operand *x, String
 
 
 gb_internal void check_or_else_expr_no_value_error(CheckerContext *c, String const &name, Operand const &x, Type *type_hint) {
+	ERROR_BLOCK();
 	gbString t = type_to_string(x.type);
 	error(x.expr, "'%.*s' does not return a value, value is of type %s", LIT(name), t);
 	if (is_type_union(type_deref(x.type))) {
@@ -1091,7 +1092,13 @@ gb_internal bool cache_load_file_directive(CheckerContext *c, Ast *call, String 
 
 		BlockingMutex *ignore_mutex = nullptr;
 		bool ok = determine_path_from_string(ignore_mutex, call, base_dir, original_string, &path);
-		gb_unused(ok);
+		if (!ok) {
+			if (err_on_not_found) {
+				error(ce->proc, "Failed to `#%.*s` file: %.*s; invalid file or cannot be found", LIT(builtin_name), LIT(original_string));
+			}
+			call->state_flags |= StateFlag_DirectiveWasFalse;
+			return false;
+		}
 	}
 
 	MUTEX_GUARD(&c->info->load_file_mutex);
@@ -1389,11 +1396,70 @@ gb_internal LoadDirectiveResult check_load_directory_directive(CheckerContext *c
 			}
 		}
 
-		gb_sort_array(file_caches.data, file_caches.count, file_cache_sort_cmp);
+		array_sort(file_caches, file_cache_sort_cmp);
 
 	}
 
 	return result;
+}
+
+gb_internal bool check_hash_kind(CheckerContext *c, Ast *call, String const &hash_kind, u8 const *data, isize data_size, u64 *hash_value) {
+	ast_node(ce, CallExpr, call);
+	ast_node(bd, BasicDirective, ce->proc);
+	String name = bd->name.string;
+	GB_ASSERT(name == "load_hash" || name == "hash");
+
+	String supported_hashes[] = {
+		str_lit("adler32"),
+		str_lit("crc32"),
+		str_lit("crc64"),
+		str_lit("fnv32"),
+		str_lit("fnv64"),
+		str_lit("fnv32a"),
+		str_lit("fnv64a"),
+		str_lit("murmur32"),
+		str_lit("murmur64"),
+	};
+
+	bool hash_found = false;
+	for (isize i = 0; i < gb_count_of(supported_hashes); i++) {
+		if (supported_hashes[i] == hash_kind) {
+			hash_found = true;
+			break;
+		}
+	}
+	if (!hash_found) {
+		ERROR_BLOCK();
+		error(ce->proc, "Invalid hash kind passed to `#%.*s`, got: %.*s", LIT(name), LIT(hash_kind));
+		error_line("\tAvailable hash kinds:\n");
+		for (isize i = 0; i < gb_count_of(supported_hashes); i++) {
+			error_line("\t%.*s\n", LIT(supported_hashes[i]));
+		}
+		return false;
+	}
+	
+	if (hash_kind == "adler32") {
+		*hash_value = gb_adler32(data, data_size);
+	} else if (hash_kind == "crc32") {
+		*hash_value = gb_crc32(data, data_size);
+	} else if (hash_kind == "crc64") {
+		*hash_value = gb_crc64(data, data_size);
+	} else if (hash_kind == "fnv32") {
+		*hash_value = gb_fnv32(data, data_size);
+	} else if (hash_kind == "fnv64") {
+		*hash_value = gb_fnv64(data, data_size);
+	} else if (hash_kind == "fnv32a") {
+		*hash_value = fnv32a(data, data_size);
+	} else if (hash_kind == "fnv64a") {
+		*hash_value = fnv64a(data, data_size);
+	} else if (hash_kind == "murmur32") {
+		*hash_value = gb_murmur32(data, data_size);
+	} else if (hash_kind == "murmur64") {
+		*hash_value = gb_murmur64(data, data_size);
+	} else {
+		compiler_error("unhandled hash kind: %.*s", LIT(hash_kind));
+	}
+	return true;
 }
 
 
@@ -1473,35 +1539,6 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 		String original_string = o.value.value_string;
 		String hash_kind = o_hash.value.value_string;
 
-		String supported_hashes[] = {
-			str_lit("adler32"),
-			str_lit("crc32"),
-			str_lit("crc64"),
-			str_lit("fnv32"),
-			str_lit("fnv64"),
-			str_lit("fnv32a"),
-			str_lit("fnv64a"),
-			str_lit("murmur32"),
-			str_lit("murmur64"),
-		};
-
-		bool hash_found = false;
-		for (isize i = 0; i < gb_count_of(supported_hashes); i++) {
-			if (supported_hashes[i] == hash_kind) {
-				hash_found = true;
-				break;
-			}
-		}
-		if (!hash_found) {
-			ERROR_BLOCK();
-			error(ce->proc, "Invalid hash kind passed to `#load_hash`, got: %.*s", LIT(hash_kind));
-			error_line("\tAvailable hash kinds:\n");
-			for (isize i = 0; i < gb_count_of(supported_hashes); i++) {
-				error_line("\t%.*s\n", LIT(supported_hashes[i]));
-			}
-			return false;
-		}
-
 		LoadFileCache *cache = nullptr;
 		if (cache_load_file_directive(c, call, original_string, true, &cache)) {
 			MUTEX_GUARD(&c->info->load_file_mutex);
@@ -1513,30 +1550,69 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 			} else {
 				u8 *data = cache->data.text;
 				isize file_size = cache->data.len;
-				if (hash_kind == "adler32") {
-					hash_value = gb_adler32(data, file_size);
-				} else if (hash_kind == "crc32") {
-					hash_value = gb_crc32(data, file_size);
-				} else if (hash_kind == "crc64") {
-					hash_value = gb_crc64(data, file_size);
-				} else if (hash_kind == "fnv32") {
-					hash_value = gb_fnv32(data, file_size);
-				} else if (hash_kind == "fnv64") {
-					hash_value = gb_fnv64(data, file_size);
-				} else if (hash_kind == "fnv32a") {
-					hash_value = fnv32a(data, file_size);
-				} else if (hash_kind == "fnv64a") {
-					hash_value = fnv64a(data, file_size);
-				} else if (hash_kind == "murmur32") {
-					hash_value = gb_murmur32(data, file_size);
-				} else if (hash_kind == "murmur64") {
-					hash_value = gb_murmur64(data, file_size);
-				} else {
-					compiler_error("unhandled hash kind: %.*s", LIT(hash_kind));
+
+				if (!check_hash_kind(c, call, hash_kind, data, file_size, &hash_value)) {
+					return false;
 				}
 				string_map_set(&cache->hashes, hash_kind, hash_value);
 			}
 
+			operand->type = t_untyped_integer;
+			operand->mode = Addressing_Constant;
+			operand->value = exact_value_u64(hash_value);
+			return true;
+		}
+		return false;
+	} else if (name == "hash") {
+		 if (ce->args.count != 2) {
+			if (ce->args.count == 0) {
+				error(ce->close, "'#hash' expects 2 argument, got 0");
+			} else {
+				error(ce->args[0], "'#hash' expects 2 argument, got %td", ce->args.count);
+			}
+			return false;
+		}
+
+		Ast *arg0 = ce->args[0];
+		Ast *arg1 = ce->args[1];
+		Operand o = {};
+		check_expr(c, &o, arg0);
+		if (o.mode != Addressing_Constant) {
+			error(arg0, "'#hash' expected a constant string argument");
+			return false;
+		}
+
+		if (!is_type_string(o.type)) {
+			gbString str = type_to_string(o.type);
+			error(arg0, "'#hash' expected a constant string, got %s", str);
+			gb_string_free(str);
+			return false;
+		}
+
+		Operand o_hash = {};
+		check_expr(c, &o_hash, arg1);
+		if (o_hash.mode != Addressing_Constant) {
+			error(arg1, "'#hash' expected a constant string argument");
+			return false;
+		}
+
+		if (!is_type_string(o_hash.type)) {
+			gbString str = type_to_string(o.type);
+			error(arg1, "'#hash' expected a constant string, got %s", str);
+			gb_string_free(str);
+			return false;
+		}
+		gbAllocator a = heap_allocator();
+
+		GB_ASSERT(o.value.kind == ExactValue_String);
+		GB_ASSERT(o_hash.value.kind == ExactValue_String);
+
+		String original_string = o.value.value_string;
+		String hash_kind = o_hash.value.value_string;
+
+		// TODO: Cache hash values based off of string constant and hash kind?
+		u64 hash_value = 0;
+		if (check_hash_kind(c, call, hash_kind, original_string.text, original_string.len, &hash_value)) {
 			operand->type = t_untyped_integer;
 			operand->mode = Addressing_Constant;
 			operand->value = exact_value_u64(hash_value);
@@ -1565,6 +1641,7 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 		}
 
 		if (!operand->value.value_bool) {
+			ERROR_BLOCK();
 			gbString arg1 = expr_to_string(ce->args[0]);
 			gbString arg2 = {};
 
@@ -1590,6 +1667,7 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 		operand->type = t_untyped_bool;
 		operand->mode = Addressing_Constant;
 	} else if (name == "panic") {
+		ERROR_BLOCK();
 		if (ce->args.count != 1) {
 			error(call, "'#panic' expects 1 argument, got %td", ce->args.count);
 			return false;
@@ -1716,6 +1794,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 	case BuiltinProc_objc_register_selector: 
 	case BuiltinProc_objc_register_class: 
 	case BuiltinProc_atomic_type_is_lock_free:
+	case BuiltinProc_has_target_feature:
 		// NOTE(bill): The first arg may be a Type, this will be checked case by case
 		break;
 
@@ -2019,6 +2098,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		
 		Selection sel = lookup_field(type, field_name, false);
 		if (sel.entity == nullptr) {
+			ERROR_BLOCK();
 			gbString type_str = type_to_string_shorthand(type);
 			error(ce->args[0],
 			      "'%s' has no field named '%.*s'", type_str, LIT(field_name));
@@ -2092,6 +2172,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		
 		Selection sel = lookup_field(type, field_name, false);
 		if (sel.entity == nullptr) {
+			ERROR_BLOCK();
 			gbString type_str = type_to_string_shorthand(type);
 			error(ce->args[0],
 			      "'%s' has no field named '%.*s'", type_str, LIT(field_name));
@@ -3390,6 +3471,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			elem->Struct.tags = gb_alloc_array(permanent_allocator(), String, fields.count);
 			elem->Struct.node = dummy_node_struct;
 			type_set_offsets(elem);
+			wait_signal_set(&elem->Struct.fields_wait_signal);
 		}
 
 		Type *soa_type = make_soa_struct_slice(c, dummy_node_soa, nullptr, elem);
@@ -3421,8 +3503,8 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		auto types = slice_make<Type *>(permanent_allocator(), t->Struct.fields.count-1);
 		for_array(i, types) {
 			Entity *f = t->Struct.fields[i];
-			GB_ASSERT(f->type->kind == Type_Pointer);
-			types[i] = alloc_type_slice(f->type->Pointer.elem);
+			GB_ASSERT(f->type->kind == Type_MultiPointer);
+			types[i] = alloc_type_slice(f->type->MultiPointer.elem);
 		}
 
 		operand->type = alloc_type_tuple_from_field_types(types.data, types.count, false, false);
@@ -3488,7 +3570,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			}
 		} else {
 			GB_ASSERT(t->kind == Type_Matrix);
-			operand->type = alloc_type_matrix(t->Matrix.elem, t->Matrix.column_count, t->Matrix.row_count);
+			operand->type = alloc_type_matrix(t->Matrix.elem, t->Matrix.column_count, t->Matrix.row_count, nullptr, nullptr, t->Matrix.is_row_major);
 		}
 		operand->type = check_matrix_type_hint(operand->type, type_hint);
 		break;
@@ -3556,7 +3638,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		}
 		
 		operand->mode = Addressing_Value;
-		operand->type = alloc_type_matrix(elem, xt->Array.count, yt->Array.count);	
+		operand->type = alloc_type_matrix(elem, xt->Array.count, yt->Array.count, nullptr, nullptr, false);
 		operand->type = check_matrix_type_hint(operand->type, type_hint);
 		break;
 	}
@@ -3656,6 +3738,41 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		operand->mode = Addressing_Constant;
 		operand->type = t_untyped_bool;
 		operand->value = exact_value_bool(value);
+		break;
+	}
+
+	case BuiltinProc_has_target_feature: {
+		String features = str_lit("");
+
+		check_expr_or_type(c, operand, ce->args[0]);
+
+		if (is_type_string(operand->type) && operand->mode == Addressing_Constant) {
+			GB_ASSERT(operand->value.kind == ExactValue_String);
+			features = operand->value.value_string;
+		} else {
+			Type *pt = base_type(operand->type);
+			if (pt->kind == Type_Proc) {
+				if (pt->Proc.require_target_feature.len != 0) {
+					GB_ASSERT(pt->Proc.enable_target_feature.len == 0);
+					features = pt->Proc.require_target_feature;
+				} else if (pt->Proc.enable_target_feature.len != 0) {
+					features = pt->Proc.enable_target_feature;
+				} else {
+					error(ce->args[0], "Expected the procedure type given to '%.*s' to have @(require_target_feature=\"...\") or @(enable_target_feature=\"...\")", LIT(builtin_name));
+				}
+			} else {
+				error(ce->args[0], "Expected a constant string or procedure type for '%.*s'", LIT(builtin_name));
+			}
+		}
+
+		String invalid;
+		if (!check_target_feature_is_valid_globally(features, &invalid)) {
+			error(ce->args[0], "Target feature '%.*s' is not a valid target feature", LIT(invalid));
+		}
+
+		operand->value = exact_value_bool(check_target_feature_is_enabled(features, nullptr));
+		operand->mode = Addressing_Constant;
+		operand->type = t_untyped_bool;
 		break;
 	}
 
@@ -3763,6 +3880,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 				soa_struct->Struct.tags[i] = old_struct->Struct.tags[i];
 			}
 		}
+		wait_signal_set(&soa_struct->Struct.fields_wait_signal);
 
 		Token token = {};
 		token.string = str_lit("Base_Type");
@@ -4084,8 +4202,8 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 				}
 			}
 
-			operand->mode = Addressing_OptionalOk;
-			operand->type = default_type(x.type);
+			operand->mode = Addressing_Value;
+			operand->type = make_optional_ok_type(default_type(x.type));
 		}
 		break;
 
@@ -4928,6 +5046,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			case TargetOs_essence:
 			case TargetOs_freebsd:
 			case TargetOs_openbsd:
+			case TargetOs_haiku:
 				switch (build_context.metrics.arch) {
 				case TargetArch_i386:
 				case TargetArch_amd64:
@@ -5177,6 +5296,34 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		operand->type = t_untyped_bool;
 		break;
 
+
+	case BuiltinProc_type_is_matrix_row_major:
+	case BuiltinProc_type_is_matrix_column_major:
+		{
+			Operand op = {};
+			Type *bt = check_type(c, ce->args[0]);
+			Type *type = base_type(bt);
+			if (type == nullptr || type == t_invalid) {
+				error(ce->args[0], "Expected a type for '%.*s'", LIT(builtin_name));
+				return false;
+			}
+			if (type->kind != Type_Matrix) {
+				gbString s = type_to_string(bt);
+				error(ce->args[0], "Expected a matrix type for '%.*s', got '%s'", LIT(builtin_name), s);
+				gb_string_free(s);
+				return false;
+			}
+
+			if (id == BuiltinProc_type_is_matrix_row_major) {
+				operand->value = exact_value_bool(bt->Matrix.is_row_major == true);
+			} else {
+				operand->value = exact_value_bool(bt->Matrix.is_row_major == false);
+			}
+			operand->mode = Addressing_Constant;
+			operand->type = t_untyped_bool;
+			break;
+		}
+
 	case BuiltinProc_type_has_field:
 		{
 			Operand op = {};
@@ -5387,6 +5534,58 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			operand->mode = Addressing_Constant;
 			operand->type = t_untyped_integer;
 			operand->value = exact_value_i64(u->Union.kind == UnionType_no_nil ? 0 : 1);
+		} break;
+
+	case BuiltinProc_type_bit_set_elem_type:
+		{
+
+			if (operand->mode != Addressing_Type) {
+				error(operand->expr, "Expected a type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			Type *bs = operand->type;
+
+			if (!is_type_bit_set(bs)) {
+				error(operand->expr, "Expected a bit_set type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			bs = base_type(bs);
+			GB_ASSERT(bs->kind == Type_BitSet);
+
+			operand->mode = Addressing_Type;
+			operand->type = bs->BitSet.elem;
+		} break;
+
+	case BuiltinProc_type_bit_set_underlying_type:
+		{
+
+			if (operand->mode != Addressing_Type) {
+				error(operand->expr, "Expected a type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			Type *bs = operand->type;
+
+			if (!is_type_bit_set(bs)) {
+				error(operand->expr, "Expected a bit_set type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			bs = base_type(bs);
+			GB_ASSERT(bs->kind == Type_BitSet);
+
+			operand->mode = Addressing_Type;
+			operand->type = bit_set_to_int(bs);
 		} break;
 
 	case BuiltinProc_type_union_variant_count:
@@ -5795,6 +5994,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 
 			Selection sel = lookup_field(type, field_name, false);
 			if (sel.entity == nullptr) {
+				ERROR_BLOCK();
 				gbString type_str = type_to_string(bt);
 				error(ce->args[0],
 				      "'%s' has no field named '%.*s'", type_str, LIT(field_name));
@@ -5819,6 +6019,26 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			break;
 		}
 		break;
+
+	case BuiltinProc_type_bit_set_backing_type:
+		{
+			Operand op = {};
+			Type *type = check_type(c, ce->args[0]);
+			Type *bt = base_type(type);
+			if (bt == nullptr || bt == t_invalid) {
+				error(ce->args[0], "Expected a type for '%.*s'", LIT(builtin_name));
+				return false;
+			}
+			if (bt->kind != Type_BitSet) {
+				gbString s = type_to_string(type);
+				error(ce->args[0], "Expected a bit_set type for '%.*s', got %s", LIT(builtin_name), s);
+				return false;
+			}
+
+			operand->mode = Addressing_Type;
+			operand->type = bit_set_to_int(bt);
+			break;
+		}
 
 	case BuiltinProc_type_equal_proc:
 		{
@@ -5988,6 +6208,11 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 				return false;
 			}
 
+			if (!check_target_feature_is_enabled(str_lit("atomics"), nullptr)) {
+				error(call, "'%.*s' requires target feature 'atomics' to be enabled, enable it with -target-features:\"atomics\" or choose a different -microarch", LIT(builtin_name));
+				return false;
+			}
+
 			Operand ptr = {};
 			Operand expected = {};
 			Operand timeout = {};
@@ -6037,6 +6262,11 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		{
 			if (!is_arch_wasm()) {
 				error(call, "'%.*s' is only allowed on wasm targets", LIT(builtin_name));
+				return false;
+			}
+
+			if (!check_target_feature_is_enabled(str_lit("atomics"), nullptr)) {
+				error(call, "'%.*s' requires target feature 'atomics' to be enabled, enable it with -target-features:\"atomics\" or choose a different -microarch", LIT(builtin_name));
 				return false;
 			}
 

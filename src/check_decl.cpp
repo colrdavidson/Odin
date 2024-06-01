@@ -210,6 +210,7 @@ gb_internal bool is_type_distinct(Ast *node) {
 	case Ast_UnionType:
 	case Ast_EnumType:
 	case Ast_ProcType:
+	case Ast_BitFieldType:
 		return true;
 
 	case Ast_PointerType:
@@ -723,9 +724,10 @@ gb_internal Entity *init_entity_foreign_library(CheckerContext *ctx, Entity *e) 
 	return nullptr;
 }
 
-gb_internal String handle_link_name(CheckerContext *ctx, Token token, String link_name, String link_prefix) {
+gb_internal String handle_link_name(CheckerContext *ctx, Token token, String link_name, String link_prefix, String link_suffix) {
+	String original_link_name = link_name;
 	if (link_prefix.len > 0) {
-		if (link_name.len > 0) {
+		if (original_link_name.len > 0) {
 			error(token, "'link_name' and 'link_prefix' cannot be used together");
 		} else {
 			isize len = link_prefix.len + token.string.len;
@@ -737,8 +739,27 @@ gb_internal String handle_link_name(CheckerContext *ctx, Token token, String lin
 			link_name = make_string(name, len);
 		}
 	}
+
+	if (link_suffix.len > 0) {
+		if (original_link_name.len > 0) {
+			error(token, "'link_name' and 'link_suffix' cannot be used together");
+		} else {
+			String new_name = token.string;
+			if (link_name != original_link_name) {
+				new_name = link_name;
+			}
+
+			isize len = new_name.len + link_suffix.len;
+			u8 *name = gb_alloc_array(permanent_allocator(), u8, len+1);
+			gb_memmove(name, &new_name[0], new_name.len);
+			gb_memmove(name+new_name.len, &link_suffix[0], link_suffix.len);
+			name[len] = 0;
+			link_name = make_string(name, len);
+		}
+	}
 	return link_name;
 }
+
 
 gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeContext const &ac) {
 	if (!(ac.objc_name.len || ac.objc_is_class_method || ac.objc_type)) {
@@ -861,7 +882,7 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 	}
 
 	TypeProc *pt = &proc_type->Proc;
-	AttributeContext ac = make_attribute_context(e->Procedure.link_prefix);
+	AttributeContext ac = make_attribute_context(e->Procedure.link_prefix, e->Procedure.link_suffix);
 
 	if (d != nullptr) {
 		check_decl_attributes(ctx, d->attributes, proc_decl_attribute, &ac);
@@ -885,17 +906,37 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 
 	check_objc_methods(ctx, e, ac);
 
-	if (ac.require_target_feature.len != 0 && ac.enable_target_feature.len != 0) {
-		error(e->token, "Attributes @(require_target_feature=...) and @(enable_target_feature=...) cannot be used together");
-	} else if (ac.require_target_feature.len != 0) {
-		if (check_target_feature_is_enabled(e->token.pos, ac.require_target_feature)) {
-			e->Procedure.target_feature = ac.require_target_feature;
-		} else {
-			e->Procedure.target_feature_disabled = true;
+	{
+		if (ac.require_target_feature.len != 0 && ac.enable_target_feature.len != 0) {
+			error(e->token, "A procedure cannot have both @(require_target_feature=\"...\") and @(enable_target_feature=\"...\")");
 		}
-	} else if (ac.enable_target_feature.len != 0) {
-		enable_target_feature(e->token.pos, ac.enable_target_feature);
-		e->Procedure.target_feature = ac.enable_target_feature;
+
+		if (build_context.strict_target_features && ac.enable_target_feature.len != 0) {
+			ac.require_target_feature = ac.enable_target_feature;
+			ac.enable_target_feature.len = 0;
+		}
+
+		if (ac.require_target_feature.len != 0) {
+			pt->require_target_feature = ac.require_target_feature;
+			String invalid;
+			if (!check_target_feature_is_valid_globally(ac.require_target_feature, &invalid)) {
+				error(e->token, "Required target feature '%.*s' is not a valid target feature", LIT(invalid));
+			} else if (!check_target_feature_is_enabled(ac.require_target_feature, nullptr)) {
+				e->flags |= EntityFlag_Disabled;
+			}
+		} else if (ac.enable_target_feature.len != 0) {
+
+			// NOTE: disallow wasm, features on that arch are always global to the module.
+			if (is_arch_wasm()) {
+				error(e->token, "@(enable_target_feature=\"...\") is not allowed on wasm, features for wasm must be declared globally");
+			}
+
+			pt->enable_target_feature = ac.enable_target_feature;
+			String invalid;
+			if (!check_target_feature_is_valid_globally(ac.enable_target_feature, &invalid)) {
+				error(e->token, "Procedure enabled target feature '%.*s' is not a valid target feature", LIT(invalid));
+			}
+		}
 	}
 
 	switch (e->Procedure.optimization_mode) {
@@ -994,7 +1035,7 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 
 	e->deprecated_message = ac.deprecated_message;
 	e->warning_message = ac.warning_message;
-	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix);
+	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix,ac.link_suffix);
 	if (ac.has_disabled_proc) {
 		if (ac.disabled_proc) {
 			e->flags |= EntityFlag_Disabled;
@@ -1202,7 +1243,7 @@ gb_internal void check_global_variable_decl(CheckerContext *ctx, Entity *&e, Ast
 	}
 	e->flags |= EntityFlag_Visited;
 
-	AttributeContext ac = make_attribute_context(e->Variable.link_prefix);
+	AttributeContext ac = make_attribute_context(e->Variable.link_prefix, e->Variable.link_suffix);
 	ac.init_expr_list_count = init_expr != nullptr ? 1 : 0;
 
 	DeclInfo *decl = decl_info_of_entity(e);
@@ -1223,7 +1264,7 @@ gb_internal void check_global_variable_decl(CheckerContext *ctx, Entity *&e, Ast
 	if (ac.is_static) {
 		error(e->token, "@(static) is not supported for global variables, nor required");
 	}
-	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix);
+	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix, ac.link_suffix);
 
 	if (is_arch_wasm() && e->Variable.thread_local_model.len != 0) {
 		e->Variable.thread_local_model.len = 0;
@@ -1369,6 +1410,10 @@ gb_internal void check_proc_group_decl(CheckerContext *ctx, Entity *pg_entity, D
 			continue;
 		}
 
+		if (p->flags & EntityFlag_Disabled) {
+			continue;
+		}
+
 		String name = p->token.string;
 
 		for (isize k = j+1; k < pge->entities.count; k++) {
@@ -1385,6 +1430,10 @@ gb_internal void check_proc_group_decl(CheckerContext *ctx, Entity *pg_entity, D
 
 
 			ERROR_BLOCK();
+
+			if (q->flags & EntityFlag_Disabled) {
+				continue;
+			}
 
 			ProcTypeOverloadKind kind = are_proc_types_overload_safe(p->type, q->type);
 			bool both_have_where_clauses = false;
@@ -1422,6 +1471,7 @@ gb_internal void check_proc_group_decl(CheckerContext *ctx, Entity *pg_entity, D
 				break;
 			case ProcOverload_ParamCount:
 			case ProcOverload_ParamTypes:
+			case ProcOverload_TargetFeatures:
 				// This is okay :)
 				break;
 
@@ -1589,6 +1639,17 @@ gb_internal bool check_proc_body(CheckerContext *ctx_, Token token, DeclInfo *de
 				if (e->kind != Entity_Variable) {
 					continue;
 				}
+				if (is_type_polymorphic(e->type) && is_type_polymorphic_record_unspecialized(e->type)) {
+					gbString s = type_to_string(e->type);
+					char const *msg = "Unspecialized polymorphic types are not allowed in procedure parameters, got %s";
+					if (e->Variable.type_expr) {
+						error(e->Variable.type_expr, msg, s);
+					} else {
+						error(e->token, msg, s);
+					}
+					gb_string_free(s);
+				}
+
 				if (!(e->flags & EntityFlag_Using)) {
 					continue;
 				}
@@ -1629,6 +1690,7 @@ gb_internal bool check_proc_body(CheckerContext *ctx_, Token token, DeclInfo *de
 		Entity *uvar = entry.uvar;
 		Entity *prev = scope_insert_no_mutex(ctx->scope, uvar);
 		if (prev != nullptr) {
+			ERROR_BLOCK();
 			error(e->token, "Namespace collision while 'using' procedure argument '%.*s' of: %.*s", LIT(e->token.string), LIT(prev->token.string));
 			error_line("%.*s != %.*s\n", LIT(uvar->token.string), LIT(prev->token.string));
 			break;

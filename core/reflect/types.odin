@@ -173,7 +173,25 @@ are_types_identical :: proc(a, b: ^Type_Info) -> bool {
 		y := b.variant.(Type_Info_Matrix) or_return
 		if x.row_count != y.row_count { return false }
 		if x.column_count != y.column_count { return false }
+		if x.layout != y.layout { return false }
 		return are_types_identical(x.elem, y.elem)
+
+	case Type_Info_Bit_Field:
+		y := b.variant.(Type_Info_Bit_Field) or_return
+		if !are_types_identical(x.backing_type, y.backing_type) { return false }
+		if len(x.names) != len(y.names) { return false }
+		for _, i in x.names {
+			if x.names[i] != y.names[i] {
+				return false
+			}
+			if !are_types_identical(x.types[i], y.types[i]) {
+				return false
+			}
+			if x.bit_sizes[i] != y.bit_sizes[i] {
+				return false
+			}
+		}
+		return true
 	}
 
 	return false
@@ -390,7 +408,68 @@ is_relative_multi_pointer :: proc(info: ^Type_Info) -> bool {
 }
 
 
+@(require_results)
+is_endian_platform :: proc(info: ^Type_Info) -> bool {
+	if info == nil { return false}
+	info := info
+	info = type_info_core(info)
+	#partial switch v in info.variant {
+	case Type_Info_Integer:
+		return v.endianness == .Platform
+	case Type_Info_Bit_Set:
+		if v.underlying != nil {
+			return is_endian_platform(v.underlying)
+		}
+		return true
+	case Type_Info_Pointer:
+		return true
+	}
+	return false
+}
 
+@(require_results)
+is_endian_little :: proc(info: ^Type_Info) -> bool {
+	if info == nil { return false}
+	info := info
+	info = type_info_core(info)
+	#partial switch v in info.variant {
+	case Type_Info_Integer:
+		if v.endianness == .Platform {
+			return ODIN_ENDIAN == .Little
+		}
+		return v.endianness == .Little
+	case Type_Info_Bit_Set:
+		if v.underlying != nil {
+			return is_endian_platform(v.underlying)
+		}
+		return ODIN_ENDIAN == .Little
+	case Type_Info_Pointer:
+		return ODIN_ENDIAN == .Little
+	}
+	return ODIN_ENDIAN == .Little
+}
+
+@(require_results)
+is_endian_big :: proc(info: ^Type_Info) -> bool {
+	if info == nil { return false}
+	info := info
+	info = type_info_core(info)
+	#partial switch v in info.variant {
+	case Type_Info_Integer:
+		if v.endianness == .Platform {
+			return ODIN_ENDIAN == .Big
+		}
+		return v.endianness == .Big
+	case Type_Info_Bit_Set:
+		if v.underlying != nil {
+			return is_endian_platform(v.underlying)
+		}
+		return ODIN_ENDIAN == .Big
+	case Type_Info_Pointer:
+		return ODIN_ENDIAN == .Big
+	}
+	return ODIN_ENDIAN == .Big
+}
 
 
 
@@ -639,6 +718,20 @@ write_type_writer :: proc(w: io.Writer, ti: ^Type_Info, n_written: ^int = nil) -
 		}
 		io.write_byte(w, ']', &n) or_return
 
+	case Type_Info_Bit_Field:
+		io.write_string(w, "bit_field ", &n) or_return
+		write_type(w, info.backing_type, &n) or_return
+		io.write_string(w, " {",         &n) or_return
+		for name, i in info.names {
+			if i > 0 { io.write_string(w, ", ", &n) or_return }
+			io.write_string(w, name,     &n) or_return
+			io.write_string(w, ": ",     &n) or_return
+			write_type(w, info.types[i], &n) or_return
+			io.write_string(w, " | ",    &n) or_return
+			io.write_u64(w, u64(info.bit_sizes[i]), 10, &n) or_return
+		}
+		io.write_string(w, "}", &n) or_return
+
 	case Type_Info_Simd_Vector:
 		io.write_string(w, "#simd[",         &n) or_return
 		io.write_i64(w, i64(info.count), 10, &n) or_return
@@ -658,6 +751,9 @@ write_type_writer :: proc(w: io.Writer, ti: ^Type_Info, n_written: ^int = nil) -
 		write_type(w, info.pointer,      &n) or_return
 		
 	case Type_Info_Matrix:
+		if info.layout == .Row_Major {
+			io.write_string(w, "#row_major ",   &n) or_return
+		}
 		io.write_string(w, "matrix[",               &n) or_return
 		io.write_i64(w, i64(info.row_count), 10,    &n) or_return
 		io.write_string(w, ", ",                    &n) or_return

@@ -1,11 +1,11 @@
 //+private
 package os2
 
+import "base:runtime"
+
 import "core:io"
 import "core:mem"
 import "core:sync"
-import "base:runtime"
-import "core:strings"
 import "core:time"
 import "core:unicode/utf16"
 import win32 "core:sys/windows"
@@ -15,15 +15,6 @@ INVALID_HANDLE :: ~uintptr(0)
 S_IWRITE :: 0o200
 _ERROR_BAD_NETPATH :: 53
 MAX_RW :: 1<<30
-
-_file_allocator :: proc() -> runtime.Allocator {
-	return heap_allocator()
-}
-
-_temp_allocator :: proc() -> runtime.Allocator {
-	// TODO(bill): make this not depend on the context allocator
-	return context.temp_allocator
-}
 
 
 _File_Kind :: enum u8 {
@@ -38,13 +29,25 @@ _File :: struct {
 	wname: win32.wstring,
 	kind: _File_Kind,
 
-	stream: io.Stream,
-
 	allocator: runtime.Allocator,
 
 	rw_mutex: sync.RW_Mutex, // read write calls
 	p_mutex:  sync.Mutex, // pread pwrite calls
 }
+
+@(init)
+init_std_files :: proc() {
+	stdin  = new_file(uintptr(win32.GetStdHandle(win32.STD_INPUT_HANDLE)),  "<stdin>")
+	stdout = new_file(uintptr(win32.GetStdHandle(win32.STD_OUTPUT_HANDLE)), "<stdout>")
+	stderr = new_file(uintptr(win32.GetStdHandle(win32.STD_ERROR_HANDLE)),  "<stderr>")
+}
+@(fini)
+fini_std_files :: proc() {
+	close(stdin)
+	close(stdout)
+	close(stderr)
+}
+
 
 _handle :: proc(f: ^File) -> win32.HANDLE {
 	return win32.HANDLE(_fd(f))
@@ -129,11 +132,11 @@ _new_file :: proc(handle: uintptr, name: string) -> ^File {
 	if handle == INVALID_HANDLE {
 		return nil
 	}
-	f := new(File, _file_allocator())
+	f := new(File, file_allocator())
 
-	f.impl.allocator = _file_allocator()
+	f.impl.allocator = file_allocator()
 	f.impl.fd = rawptr(handle)
-	f.impl.name = strings.clone(name, f.impl.allocator)
+	f.impl.name, _ = clone_string(name, f.impl.allocator)
 	f.impl.wname = win32.utf8_to_wstring(name, f.impl.allocator)
 
 	handle := _handle(f)
@@ -146,7 +149,7 @@ _new_file :: proc(handle: uintptr, name: string) -> ^File {
 	}
 	f.impl.kind = kind
 
-	f.impl.stream = {
+	f.stream = {
 		data = f,
 		procedure = _file_stream_proc,
 	}
@@ -278,10 +281,10 @@ _read :: proc(f: ^File, p: []byte) -> (n: i64, err: Error) {
 		to_read := min(win32.DWORD(length), MAX_RW)
 		ok: win32.BOOL
 		if f.impl.kind == .Console {
-			n, err := read_console(handle, p[total_read:][:to_read])
+			n, cerr := read_console(handle, p[total_read:][:to_read])
 			total_read += n
-			if err != nil {
-				return i64(total_read), err
+			if cerr != nil {
+				return i64(total_read), cerr
 			}
 		} else {
 			ok = win32.ReadFile(handle, &p[total_read], to_read, &single_read_length, nil)
@@ -401,6 +404,9 @@ _write_at :: proc(f: ^File, p: []byte, offset: i64) -> (n: i64, err: Error) {
 
 _file_size :: proc(f: ^File) -> (n: i64, err: Error) {
 	length: win32.LARGE_INTEGER
+	if f.impl.kind == .Pipe {
+		return 0, .No_Size
+	}
 	handle := _handle(f)
 	if !win32.GetFileSizeEx(handle, &length) {
 		err = _get_platform_error()
@@ -546,7 +552,10 @@ _normalize_link_path :: proc(p: []u16, allocator: runtime.Allocator) -> (str: st
 	if n == 0 {
 		return "", _get_platform_error()
 	}
-	buf := make([]u16, n+1, _temp_allocator())
+
+	TEMP_ALLOCATOR_GUARD()
+
+	buf := make([]u16, n+1, temp_allocator())
 	n = win32.GetFinalPathNameByHandleW(handle, raw_data(buf), u32(len(buf)), win32.VOLUME_NAME_DOS)
 	if n == 0 {
 		return "", _get_platform_error()
@@ -730,7 +739,6 @@ _is_dir :: proc(path: string) -> bool {
 _file_stream_proc :: proc(stream_data: rawptr, mode: io.Stream_Mode, p: []byte, offset: i64, whence: io.Seek_From) -> (n: i64, err: io.Error) {
 	f := (^File)(stream_data)
 	ferr: Error
-	i: int
 	switch mode {
 	case .Read:
 		n, ferr = _read(f, p)
@@ -760,14 +768,12 @@ _file_stream_proc :: proc(stream_data: rawptr, mode: io.Stream_Mode, p: []byte, 
 		ferr = _flush(f)
 		err = error_to_io_error(ferr)
 		return
-	case .Close:
+	case .Close, .Destroy:
 		ferr = _close(f)
 		err = error_to_io_error(ferr)
 		return
 	case .Query:
 		return io.query_utility({.Read, .Read_At, .Write, .Write_At, .Seek, .Size, .Flush, .Close, .Query})
-	case .Destroy:
-		return 0, .Empty
 	}
 	return 0, .Empty
 }

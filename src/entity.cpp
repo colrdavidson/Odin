@@ -43,6 +43,7 @@ enum EntityFlag : u64 {
 	EntityFlag_NoAlias       = 1ull<<9,
 	EntityFlag_TypeField     = 1ull<<10,
 	EntityFlag_Value         = 1ull<<11,
+	EntityFlag_BitFieldField = 1ull<<12,
 
 
 
@@ -59,7 +60,7 @@ enum EntityFlag : u64 {
 	EntityFlag_ProcBodyChecked = 1ull<<21,
 
 	EntityFlag_CVarArg       = 1ull<<22,
-
+	EntityFlag_NoBroadcast   = 1ull<<23,
 	EntityFlag_AnyInt        = 1ull<<24,
 
 	EntityFlag_Disabled      = 1ull<<25,
@@ -83,8 +84,6 @@ enum EntityFlag : u64 {
 	
 	EntityFlag_Require = 1ull<<50,
 	EntityFlag_ByPtr   = 1ull<<51, // enforce parameter is passed by pointer
-
-	EntityFlag_OldForOrSwitchValue = 1ull<<52,
 
 	EntityFlag_Overridden    = 1ull<<63,
 };
@@ -209,9 +208,11 @@ struct Entity {
 			CommentGroup *comment;
 		} Constant;
 		struct {
+			Ast *type_expr; // only used for some variables within procedure bodies
 			Ast *init_expr; // only used for some variables within procedure bodies
 			i32  field_index;
 			i32  field_group_index;
+			u8   bit_field_bit_size;
 
 			ParameterValue param_value;
 
@@ -222,11 +223,13 @@ struct Entity {
 			Ast *      foreign_library_ident;
 			String     link_name;
 			String     link_prefix;
+			String     link_suffix;
 			String     link_section;
 			CommentGroup *docs;
 			CommentGroup *comment;
 			bool       is_foreign;
 			bool       is_export;
+			bool       is_global;
 		} Variable;
 		struct {
 			Type * type_parameter_specialization;
@@ -241,6 +244,7 @@ struct Entity {
 			Ast *   foreign_library_ident;
 			String  link_name;
 			String  link_prefix;
+			String  link_suffix;
 			DeferredProcedure deferred_procedure;
 
 			struct GenProcsData *gen_procs;
@@ -249,10 +253,8 @@ struct Entity {
 			bool    is_foreign                 : 1;
 			bool    is_export                  : 1;
 			bool    generated_from_polymorphic : 1;
-			bool    target_feature_disabled    : 1;
 			bool    entry_point_only           : 1;
 			bool    has_instrumentation        : 1;
-			String  target_feature;
 		} Procedure;
 		struct {
 			Array<Entity *> entities;
@@ -266,6 +268,7 @@ struct Entity {
 			Scope *scope;
 		} ImportName;
 		struct {
+			Ast *decl;
 			Slice<String> paths;
 			String name;
 			i64 priority_index;
@@ -477,4 +480,26 @@ gb_internal Entity *strip_entity_wrapping(Entity *e) {
 gb_internal Entity *strip_entity_wrapping(Ast *expr) {
 	Entity *e = entity_from_expr(expr);
 	return strip_entity_wrapping(e);
+}
+
+
+gb_internal bool is_entity_local_variable(Entity *e) {
+	if (e == nullptr) {
+		return false;
+	}
+	if (e->kind != Entity_Variable) {
+		return false;
+	}
+	if (e->Variable.is_global) {
+		return false;
+	}
+	if (e->scope == nullptr) {
+		return true;
+	}
+	if (e->flags & (EntityFlag_ForValue|EntityFlag_SwitchValue|EntityFlag_Static)) {
+		return false;
+	}
+
+	return ((e->scope->flags &~ ScopeFlag_ContextDefined) == 0) ||
+	       (e->scope->flags & ScopeFlag_Proc) != 0;
 }

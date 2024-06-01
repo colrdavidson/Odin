@@ -40,6 +40,24 @@ align_forward_int :: #force_inline proc(ptr, align: int) -> int {
 	return p
 }
 
+is_power_of_two_uint :: #force_inline proc "contextless" (x: uint) -> bool {
+	if x <= 0 {
+		return false
+	}
+	return (x & (x-1)) == 0
+}
+
+align_forward_uint :: #force_inline proc(ptr, align: uint) -> uint {
+	assert(is_power_of_two_uint(align))
+
+	p := ptr
+	modulo := p & (align-1)
+	if modulo != 0 {
+		p += align - modulo
+	}
+	return p
+}
+
 is_power_of_two_uintptr :: #force_inline proc "contextless" (x: uintptr) -> bool {
 	if x <= 0 {
 		return false
@@ -56,6 +74,18 @@ align_forward_uintptr :: #force_inline proc(ptr, align: uintptr) -> uintptr {
 		p += align - modulo
 	}
 	return p
+}
+
+is_power_of_two :: proc {
+	is_power_of_two_int,
+	is_power_of_two_uint,
+	is_power_of_two_uintptr,
+}
+
+align_forward :: proc {
+	align_forward_int,
+	align_forward_uint,
+	align_forward_uintptr,
 }
 
 mem_zero :: proc "contextless" (data: rawptr, len: int) -> rawptr {
@@ -801,6 +831,10 @@ truncsfhf2 :: proc "c" (value: f32) -> __float16 {
 	}
 }
 
+@(link_name="__aeabi_d2h", linkage=RUNTIME_LINKAGE, require=RUNTIME_REQUIRE)
+aeabi_d2h :: proc "c" (value: f64) -> __float16 {
+	return truncsfhf2(f32(value))
+}
 
 @(link_name="__truncdfhf2", linkage=RUNTIME_LINKAGE, require=RUNTIME_REQUIRE)
 truncdfhf2 :: proc "c" (value: f64) -> __float16 {
@@ -962,9 +996,11 @@ udivmodti4 :: proc "c" (a, b: u128, rem: ^u128) -> u128 {
 	return udivmod128(a, b, rem)
 }
 
-@(link_name="__udivti3", linkage=RUNTIME_LINKAGE, require=RUNTIME_REQUIRE)
-udivti3 :: proc "c" (a, b: u128) -> u128 {
-	return udivmodti4(a, b, nil)
+when !IS_WASM {
+	@(link_name="__udivti3", linkage=RUNTIME_LINKAGE, require=RUNTIME_REQUIRE)
+	udivti3 :: proc "c" (a, b: u128) -> u128 {
+		return udivmodti4(a, b, nil)
+	}
 }
 
 
@@ -1033,4 +1069,24 @@ fixdfti :: proc(a: u64) -> i128 {
 		return sign * (i128(significand) << (exponent - significandBits))
 	}
 
+}
+
+
+
+__write_bits :: proc "contextless" (dst, src: [^]byte, offset: uintptr, size: uintptr) {
+	for i in 0..<size {
+		j := offset+i
+		the_bit := byte((src[i>>3]) & (1<<(i&7)) != 0)
+		dst[j>>3] &~=       1<<(j&7)
+		dst[j>>3]  |= the_bit<<(j&7)
+	}
+}
+
+__read_bits :: proc "contextless" (dst, src: [^]byte, offset: uintptr, size: uintptr) {
+	for j in 0..<size {
+		i := offset+j
+		the_bit := byte((src[i>>3]) & (1<<(i&7)) != 0)
+		dst[j>>3] &~=       1<<(j&7)
+		dst[j>>3]  |= the_bit<<(j&7)
+	}
 }
