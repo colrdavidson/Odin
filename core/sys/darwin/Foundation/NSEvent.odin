@@ -307,6 +307,14 @@ Event_deltaY :: proc "c" (self: ^Event) -> Float {
 Event_deltaZ :: proc "c" (self: ^Event) -> Float {
 	return msgSend(Float, self, "deltaZ")
 }
+@(objc_type=Event, objc_name="magnification")
+Event_magnification :: proc "c" (self: ^Event) -> Float {
+	return msgSend(Float, self, "magnification")
+}
+@(objc_type=Event, objc_name="rotation")
+Event_rotation :: proc "c" (self: ^Event) -> Float {
+	return msgSend(Float, self, "rotation")
+}
 @(objc_type=Event, objc_name="delta")
 Event_delta :: proc "c" (self: ^Event) -> (x, y, z: Float) {
 	x = self->deltaX()
