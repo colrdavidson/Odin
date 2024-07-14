@@ -7,7 +7,7 @@ set -eu
 : ${LLVM_CONFIG=}
 
 CPPFLAGS="$CPPFLAGS -DODIN_VERSION_RAW=\"dev-$(date +"%Y-%m")\""
-CXXFLAGS="$CXXFLAGS -std=c++14"
+CXXFLAGS="$CXXFLAGS -std=c++14 -finstrument-functions"
 DISABLED_WARNINGS="-Wno-switch -Wno-macro-redefined -Wno-unused-value"
 LDFLAGS="$LDFLAGS -pthread -lm -lstdc++"
 OS_ARCH="$(uname -m)"
@@ -119,7 +119,7 @@ build_odin() {
 		EXTRAFLAGS="-g"
 		;;
 	release)
-		EXTRAFLAGS="-O3"
+		EXTRAFLAGS="-O3 -g"
 		;;
 	release-native)
 		if [ "$OS_ARCH" = "arm64" ]; then

@@ -177,6 +177,8 @@ gb_internal THREAD_PROC(thread_pool_thread_proc) {
 	WorkerTask task;
 	current_thread = thread;
 	ThreadPool *pool = current_thread->pool;
+	spall_auto_thread_init(current_thread->idx, SPALL_DEFAULT_BUFFER_SIZE);
+	defer(spall_auto_thread_quit());
 	// debugf("worker id: %td\n", current_thread->idx);
 
 	while (pool->running.load(std::memory_order_seq_cst)) {

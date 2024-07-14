@@ -1,4 +1,7 @@
 // #define NO_ARRAY_BOUNDS_CHECK
+
+#include "spall_native_auto.h"
+
 #include "common.cpp"
 #include "timings.cpp"
 #include "tokenizer.cpp"
@@ -2909,6 +2912,11 @@ gb_internal void init_terminal(void) {
 }
 
 int main(int arg_count, char const **arg_ptr) {
+	spall_auto_init((char *)"odin.spall");
+	spall_auto_thread_init(0, SPALL_DEFAULT_BUFFER_SIZE);
+	defer(spall_auto_thread_quit());
+	defer(spall_auto_quit());
+
 	if (arg_count < 2) {
 		usage(make_string_c(arg_ptr[0]));
 		return 1;
@@ -3442,3 +3450,6 @@ end_of_code_gen:;
 	}
 	return 0;
 }
+
+#define SPALL_AUTO_IMPLEMENTATION
+#include "spall_native_auto.h"
