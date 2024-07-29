@@ -88,21 +88,24 @@ _open :: proc(name: string, flags: File_Flags, perm: int) -> (f: ^File, err: Err
 		return nil, _get_platform_error(errno)
 	}
 
-	return _new_file(uintptr(fd), name), nil
+	return _new_file(uintptr(fd), name)
 }
 
-_new_file :: proc(fd: uintptr, _: string = "") -> ^File {
-	impl := new(File_Impl, file_allocator())
+_new_file :: proc(fd: uintptr, _: string = "") -> (f: ^File, err: Error) {
+	impl := new(File_Impl, file_allocator()) or_return
+	defer if err != nil {
+		free(impl, file_allocator())
+	}
 	impl.file.impl = impl
 	impl.fd = linux.Fd(fd)
 	impl.allocator = file_allocator()
-	impl.name = _get_full_path(impl.fd, impl.allocator)
+	impl.name = _get_full_path(impl.fd, file_allocator()) or_return
 	impl.file.stream = {
 		data = impl,
 		procedure = _file_stream_proc,
 	}
 	impl.file.fstat = _fstat
-	return &impl.file
+	return &impl.file, nil
 }
 
 _destroy :: proc(f: ^File_Impl) -> Error {
@@ -156,7 +159,7 @@ _read :: proc(f: ^File_Impl, p: []byte) -> (i64, Error) {
 	if errno != .NONE {
 		return -1, _get_platform_error(errno)
 	}
-	return i64(n), n == 0 ? io.Error.EOF : nil
+	return i64(n), io.Error.EOF if n == 0 else nil
 }
 
 _read_at :: proc(f: ^File_Impl, p: []byte, offset: i64) -> (i64, Error) {
@@ -219,15 +222,24 @@ _truncate :: proc(f: ^File, size: i64) -> Error {
 }
 
 _remove :: proc(name: string) -> Error {
+	is_dir_fd :: proc(fd: linux.Fd) -> bool {
+		s: linux.Stat
+		if linux.fstat(fd, &s) != .NONE {
+			return false
+		}
+		return linux.S_ISDIR(s.mode)
+	}
+
 	TEMP_ALLOCATOR_GUARD()
 	name_cstr := temp_cstring(name) or_return
 
 	fd, errno := linux.open(name_cstr, {.NOFOLLOW})
 	#partial switch (errno) {
-	case .ELOOP: /* symlink */
+	case .ELOOP:
+		/* symlink */
 	case .NONE:
 		defer linux.close(fd)
-		if _is_dir_fd(fd) {
+		if is_dir_fd(fd) {
 			return _get_platform_error(linux.rmdir(name_cstr))
 		}
 	case:
@@ -362,42 +374,6 @@ _exists :: proc(name: string) -> bool {
 	name_cstr, _ := temp_cstring(name)
 	res, errno := linux.access(name_cstr, linux.F_OK)
 	return !res && errno == .NONE
-}
-
-_is_file :: proc(name: string) -> bool {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr, _ := temp_cstring(name)
-	s: linux.Stat
-	if linux.stat(name_cstr, &s) != .NONE {
-		return false
-	}
-	return linux.S_ISREG(s.mode)
-}
-
-_is_file_fd :: proc(fd: linux.Fd) -> bool {
-	s: linux.Stat
-	if linux.fstat(fd, &s) != .NONE {
-		return false
-	}
-	return linux.S_ISREG(s.mode)
-}
-
-_is_dir :: proc(name: string) -> bool {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr, _ := temp_cstring(name)
-	s: linux.Stat
-	if linux.stat(name_cstr, &s) != .NONE {
-		return false
-	}
-	return linux.S_ISDIR(s.mode)
-}
-
-_is_dir_fd :: proc(fd: linux.Fd) -> bool {
-	s: linux.Stat
-	if linux.fstat(fd, &s) != .NONE {
-		return false
-	}
-	return linux.S_ISDIR(s.mode)
 }
 
 /* Certain files in the Linux file system are not actual

@@ -1559,11 +1559,30 @@ gb_internal Type *determine_type_from_polymorphic(CheckerContext *ctx, Type *pol
 		return poly_type;
 	}
 	if (show_error) {
+		ERROR_BLOCK();
 		gbString pts = type_to_string(poly_type);
 		gbString ots = type_to_string(operand.type, true);
 		defer (gb_string_free(pts));
 		defer (gb_string_free(ots));
 		error(operand.expr, "Cannot determine polymorphic type from parameter: '%s' to '%s'", ots, pts);
+
+		Type *pt = poly_type;
+		while (pt && pt->kind == Type_Generic && pt->Generic.specialized) {
+			pt = pt->Generic.specialized;
+		}
+		if (is_type_slice(pt) &&
+		    (is_type_dynamic_array(operand.type) || is_type_array(operand.type))) {
+			Ast *expr = unparen_expr(operand.expr);
+			if (expr->kind == Ast_CompoundLit) {
+				gbString es = type_to_string(base_any_array_type(operand.type));
+				error_line("\tSuggestion: Try using a slice compound literal instead '[]%s{...}'\n", es);
+				gb_string_free(es);
+			} else {
+				gbString os = expr_to_string(operand.expr);
+				error_line("\tSuggestion: Try slicing the value with '%s[:]'\n", os);
+				gb_string_free(os);
+			}
+		}
 	}
 	return t_invalid;
 }
@@ -2454,9 +2473,15 @@ gb_internal i64 check_array_count(CheckerContext *ctx, Operand *o, Ast *e) {
 	if (e == nullptr) {
 		return 0;
 	}
-	if (e->kind == Ast_UnaryExpr &&
-	    e->UnaryExpr.op.kind == Token_Question) {
-		return -1;
+	if (e->kind == Ast_UnaryExpr) {
+		Token op = e->UnaryExpr.op;
+		if (op.kind == Token_Question) {
+			return -1;
+		}
+		if (e->UnaryExpr.expr == nullptr) {
+			error(op, "Invalid array count '[%.*s]'", LIT(op.string));
+			return 0;
+		}
 	}
 
 	check_expr_or_type(ctx, o, e);
