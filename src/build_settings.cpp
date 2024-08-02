@@ -1822,6 +1822,7 @@ gb_internal bool init_build_paths(String init_filename) {
 		if (bc->resource_filepath.len > 0) {
 			bc->build_paths[BuildPath_RES] = path_from_string(ha, bc->resource_filepath);
 			if (!string_ends_with(bc->resource_filepath, str_lit(".res"))) {
+				bc->build_paths[BuildPath_RES].ext = copy_string(ha, STR_LIT("res"));
 				bc->build_paths[BuildPath_RC]      = path_from_string(ha, bc->resource_filepath);
 				bc->build_paths[BuildPath_RC].ext  = copy_string(ha, STR_LIT("rc"));
 			}
@@ -2010,15 +2011,20 @@ gb_internal bool init_build_paths(String init_filename) {
 		}
 	}
 
+	String output_file = path_to_string(ha, bc->build_paths[BuildPath_Output]);
+	defer (gb_free(ha, output_file.text));
+
 	// Check if output path is a directory.
 	if (path_is_directory(bc->build_paths[BuildPath_Output])) {
-		String output_file = path_to_string(ha, bc->build_paths[BuildPath_Output]);
-		defer (gb_free(ha, output_file.text));
 		gb_printf_err("Output path %.*s is a directory.\n", LIT(output_file));
 		return false;
 	}
 
-	if (!write_directory(bc->build_paths[BuildPath_Output].basename)) {
+	gbFile output_file_test;
+	gbFileError output_test_err = gb_file_open_mode(&output_file_test, gbFileMode_Append | gbFileMode_Rw, (const char*)output_file.text);
+	defer (gb_file_close(&output_file_test));
+
+	if (output_test_err != 0) {
 		String output_file = path_to_string(ha, bc->build_paths[BuildPath_Output]);
 		defer (gb_free(ha, output_file.text));
 		gb_printf_err("No write permissions for output path: %.*s\n", LIT(output_file));
