@@ -1,4 +1,5 @@
-//+no-instrumentation
+#+build linux
+#+no-instrumentation
 package linux
 
 import "base:intrinsics"
@@ -39,7 +40,7 @@ write :: proc "contextless" (fd: Fd, buf: []u8) -> (int, Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 open :: proc "contextless" (name: cstring, flags: Open_Flags, mode: Mode = {}) -> (Fd, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_openat, AT_FDCWD, transmute(uintptr) name, transmute(u32) flags, transmute(u32) mode)
 		return errno_unwrap(ret, Fd)
 	} else {
@@ -68,7 +69,7 @@ close :: proc "contextless" (fd: Fd) -> (Errno) {
 */
 stat :: proc "contextless" (filename: cstring, stat: ^Stat) -> (Errno) {
 	when size_of(int) == 8 {
-		when ODIN_ARCH == .arm64 {
+		when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 			ret := syscall(SYS_fstatat, AT_FDCWD, cast(rawptr) filename, stat, 0)
 			return Errno(-ret)
 		} else {
@@ -111,7 +112,7 @@ fstat :: proc "contextless" (fd: Fd, stat: ^Stat) -> (Errno) {
 */
 lstat :: proc "contextless" (filename: cstring, stat: ^Stat) -> (Errno) {
 	when size_of(int) == 8 {
-		when ODIN_ARCH == .arm64 {
+		when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 			return fstatat(AT_FDCWD, filename, stat, {.SYMLINK_NOFOLLOW})
 		} else {
 			ret := syscall(SYS_lstat, cast(rawptr) filename, stat)
@@ -128,7 +129,7 @@ lstat :: proc "contextless" (filename: cstring, stat: ^Stat) -> (Errno) {
 	Available since Linux 2.2.
 */
 poll :: proc "contextless" (fds: []Poll_Fd, timeout: i32) -> (i32, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		seconds := cast(uint) timeout / 1000
 		nanoseconds := cast(uint) (timeout % 1000) * 1_000_000
 		timeout_spec := Time_Spec{seconds, nanoseconds}
@@ -151,7 +152,8 @@ lseek :: proc "contextless" (fd: Fd, off: i64, whence: Seek_Whence) -> (i64, Err
 		return errno_unwrap(ret, i64)
 	} else {
 		result: i64 = ---
-		ret := syscall(SYS__llseek, fd, compat64_arg_pair(off), &result, whence)
+		lo, hi := compat64_arg_pair(off)
+		ret := syscall(SYS__llseek, fd, hi, lo, &result, whence)
 		return result, Errno(-ret)
 	}
 }
@@ -211,7 +213,7 @@ rt_sigreturn :: proc "c" () -> ! {
 /*
 	Alter an action taken by a process.
 */
-rt_sigaction :: proc "contextless" (sig: Signal, sigaction: ^Sig_Action($T), old_sigaction: ^Sig_Action) -> Errno {
+rt_sigaction :: proc "contextless" (sig: Signal, sigaction: ^Sig_Action($T), old_sigaction: ^Sig_Action($U)) -> Errno {
 	// NOTE(jason): It appears that the restorer is required for i386 and amd64
 	when ODIN_ARCH == .i386 || ODIN_ARCH == .amd64 {
 		sigaction.flags += {.RESTORER}
@@ -232,7 +234,18 @@ rt_sigprocmask :: proc "contextless" (mask_kind: Sig_Mask_Kind, new_set: ^Sig_Se
 	return Errno(-ret)
 }
 
-// TODO(flysand): ioctl
+/*
+	Control devices. The ioctl syscall is a bit special because
+	its argument is usually a pointer to some driver-specific structure.
+	The request value is device-specific. Consult your LibC implementation's
+	ioctls.h file to learn more. The returned value of ioctl *may* be an error
+	code value instead of a memory address depending on the request type.
+	Available since Linux 1.0.
+*/
+ioctl :: proc "contextless" (fd: Fd, request: u32, arg: uintptr) -> (uintptr) {
+	ret := syscall(SYS_ioctl, fd, request, arg)
+	return uintptr(ret)
+}
 
 /*
 	Read the file at a specified offset.
@@ -240,7 +253,11 @@ rt_sigprocmask :: proc "contextless" (mask_kind: Sig_Mask_Kind, new_set: ^Sig_Se
 	Available since Linux 2.2.
 */
 pread :: proc "contextless" (fd: Fd, buf: []u8, offset: i64) -> (int, Errno) {
-	ret := syscall(SYS_pread64, fd, raw_data(buf), len(buf), compat64_arg_pair(offset))
+	when ODIN_ARCH == .arm32 {
+		ret := syscall(SYS_pread64, fd, raw_data(buf), len(buf), 0, compat64_arg_pair(offset))
+	} else {
+		ret := syscall(SYS_pread64, fd, raw_data(buf), len(buf), compat64_arg_pair(offset))
+	}
 	return errno_unwrap(ret, int)
 }
 
@@ -250,7 +267,11 @@ pread :: proc "contextless" (fd: Fd, buf: []u8, offset: i64) -> (int, Errno) {
 	Available since Linux 2.2.
 */
 pwrite :: proc "contextless" (fd: Fd, buf: []u8, offset: i64) -> (int, Errno) {
-	ret := syscall(SYS_pwrite64, fd, raw_data(buf), len(buf), compat64_arg_pair(offset))
+	when ODIN_ARCH == .arm32 {
+		ret := syscall(SYS_pwrite64, fd, raw_data(buf), len(buf), 0, compat64_arg_pair(offset))
+	} else {
+		ret := syscall(SYS_pwrite64, fd, raw_data(buf), len(buf), compat64_arg_pair(offset))
+	}
 	return errno_unwrap(ret, int)
 }
 
@@ -279,13 +300,13 @@ writev :: proc "contextless" (fd: Fd, iov: []IO_Vec) -> (int, Errno) {
 	Available since Linux 1.0.
 	For ARM64 available since Linux 2.6.16.
 */
-access :: proc "contextless" (name: cstring, mode: Mode = F_OK) -> (bool, Errno) {
-	when ODIN_ARCH == .arm64 {
+access :: proc "contextless" (name: cstring, mode: Mode = F_OK) -> (Errno) {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_faccessat, AT_FDCWD, cast(rawptr) name, transmute(u32) mode)
-		return errno_unwrap(ret, bool)
+		return Errno(-ret)
 	} else {
 		ret := syscall(SYS_access, cast(rawptr) name, transmute(u32) mode)
-		return errno_unwrap(ret, bool)
+		return Errno(-ret)
 	}
 }
 
@@ -396,7 +417,7 @@ dup :: proc "contextless" (fd: Fd) -> (Fd, Errno) {
 	On ARM64 available since Linux 2.6.27.
 */
 dup2 :: proc "contextless" (old: Fd, new: Fd) -> (Fd, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_dup3, old, new, 0)
 		return errno_unwrap(ret, Fd)
 	} else {
@@ -411,7 +432,7 @@ dup2 :: proc "contextless" (old: Fd, new: Fd) -> (Fd, Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 pause :: proc "contextless" () {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		syscall(SYS_ppoll, 0, 0, 0, 0)
 	} else {
 		syscall(SYS_pause)
@@ -441,7 +462,7 @@ getitimer :: proc "contextless" (which: ITimer_Which, cur: ^ITimer_Val) -> (Errn
 	Available since Linux 1.0.
 */
 alarm :: proc "contextless" (seconds: u32) -> u32 {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		new := ITimer_Val { value = { seconds = cast(int) seconds } }
 		old := ITimer_Val {}
 		syscall(SYS_setitimer, ITimer_Which.REAL, &new, &old)
@@ -754,7 +775,7 @@ getsockopt :: proc {
 	Available since Linux 1.0.
 */
 fork :: proc "contextless" () -> (Pid, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_clone, u64(Signal.SIGCHLD), cast(rawptr) nil, cast(rawptr) nil, cast(rawptr) nil, u64(0))
 		return errno_unwrap(ret, Pid)
 	} else {
@@ -768,7 +789,7 @@ fork :: proc "contextless" () -> (Pid, Errno) {
 	Available since Linux 2.2.
 */
 vfork :: proc "contextless" () -> Pid {
-	when ODIN_ARCH != .arm64 {
+	when ODIN_ARCH != .arm64 && ODIN_ARCH != .riscv64 {
 		return Pid(syscall(SYS_vfork))
 	} else {
 		return Pid(syscall(SYS_clone, Signal.SIGCHLD))
@@ -781,7 +802,7 @@ vfork :: proc "contextless" () -> Pid {
 	On ARM64 available since Linux 3.19.
 */
 execve :: proc "contextless" (name: cstring, argv: [^]cstring, envp: [^]cstring) -> (Errno) {
-	when ODIN_ARCH != .arm64 {
+	when ODIN_ARCH != .arm64 && ODIN_ARCH != .riscv64 {
 		ret := syscall(SYS_execve, cast(rawptr) name, cast(rawptr) argv, cast(rawptr) envp)
 		return Errno(-ret)
 	} else {
@@ -1116,7 +1137,10 @@ fdatasync :: proc "contextless" (fd: Fd) -> (Errno) {
 	On 32-bit architectures available since Linux 2.4.
 */
 truncate :: proc "contextless" (name: cstring, length: i64) -> (Errno) {
-	when size_of(int) == 4 {
+	when ODIN_ARCH == .arm32 {
+		ret := syscall(SYS_truncate64, cast(rawptr) name, 0, compat64_arg_pair(length))
+		return Errno(-ret)
+	} else when size_of(int) == 4 {
 		ret := syscall(SYS_truncate64, cast(rawptr) name, compat64_arg_pair(length))
 		return Errno(-ret)
 	} else {
@@ -1130,7 +1154,10 @@ truncate :: proc "contextless" (name: cstring, length: i64) -> (Errno) {
 	On 32-bit architectures available since 2.4.
 */
 ftruncate :: proc "contextless" (fd: Fd, length: i64) -> (Errno) {
-	when size_of(int) == 4 {
+	when ODIN_ARCH == .arm32 {
+		ret := syscall(SYS_ftruncate64, fd, 0, compat64_arg_pair(length))
+		return Errno(-ret)
+	} else when size_of(int) == 4 {
 		ret := syscall(SYS_ftruncate64, fd, compat64_arg_pair(length))
 		return Errno(-ret)
 	} else {
@@ -1182,7 +1209,7 @@ fchdir :: proc "contextless" (fd: Fd) -> (Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 rename :: proc "contextless" (old: cstring, new: cstring) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_renameat, AT_FDCWD, cast(rawptr) old, AT_FDCWD, cast(rawptr) new)
 		return Errno(-ret)
 	} else {
@@ -1197,7 +1224,7 @@ rename :: proc "contextless" (old: cstring, new: cstring) -> (Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 mkdir :: proc "contextless" (name: cstring, mode: Mode) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_mkdirat, AT_FDCWD, cast(rawptr) name, transmute(u32) mode)
 		return Errno(-ret)
 	} else {
@@ -1212,7 +1239,7 @@ mkdir :: proc "contextless" (name: cstring, mode: Mode) -> (Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 rmdir :: proc "contextless" (name: cstring) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_unlinkat, AT_FDCWD, cast(rawptr) name, transmute(i32) FD_Flags{.REMOVEDIR})
 		return Errno(-ret)
 	} else {
@@ -1227,7 +1254,7 @@ rmdir :: proc "contextless" (name: cstring) -> (Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 creat :: proc "contextless" (name: cstring, mode: Mode) -> (Fd, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		return openat(AT_FDCWD, name, {.CREAT, .WRONLY,.TRUNC}, mode)
 	} else {
 		ret := syscall(SYS_creat, cast(rawptr) name, transmute(u32) mode)
@@ -1241,7 +1268,7 @@ creat :: proc "contextless" (name: cstring, mode: Mode) -> (Fd, Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 link :: proc "contextless" (target: cstring, linkpath: cstring) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_linkat, AT_FDCWD, cast(rawptr) target, AT_FDCWD, cast(rawptr) linkpath, 0)
 		return Errno(-ret)
 	} else {
@@ -1256,7 +1283,7 @@ link :: proc "contextless" (target: cstring, linkpath: cstring) -> (Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 unlink :: proc "contextless" (name: cstring) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_unlinkat, AT_FDCWD, cast(rawptr) name, 0)
 		return Errno(-ret)
 	} else {
@@ -1271,7 +1298,7 @@ unlink :: proc "contextless" (name: cstring) -> (Errno) {
 	On arm64 available since Linux 2.6.16.
 */
 symlink :: proc "contextless" (target: cstring, linkpath: cstring) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_symlinkat, cast(rawptr) target, AT_FDCWD, cast(rawptr) linkpath)
 		return Errno(-ret)
 	} else {
@@ -1286,7 +1313,7 @@ symlink :: proc "contextless" (target: cstring, linkpath: cstring) -> (Errno) {
 	On arm64 available since Linux 2.6.16.
 */
 readlink :: proc "contextless" (name: cstring, buf: []u8) -> (int, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_readlinkat, AT_FDCWD, cast(rawptr) name, raw_data(buf), len(buf))
 		return errno_unwrap(ret, int)
 	} else {
@@ -1301,7 +1328,7 @@ readlink :: proc "contextless" (name: cstring, buf: []u8) -> (int, Errno) {
 	On ARM64 available since Linux 2.6.16.
 */
 chmod :: proc "contextless" (name: cstring, mode: Mode) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_fchmodat, AT_FDCWD, cast(rawptr) name, transmute(u32) mode)
 		return Errno(-ret)
 	} else {
@@ -1329,7 +1356,7 @@ chown :: proc "contextless" (name: cstring, uid: Uid, gid: Gid) -> (Errno) {
 	when size_of(int) == 4 {
 		ret := syscall(SYS_chown32, cast(rawptr) name, uid, gid)
 		return Errno(-ret)
-	} else when ODIN_ARCH == .arm64 {
+	} else when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_fchownat, AT_FDCWD, cast(rawptr) name, uid, gid, 0)
 		return Errno(-ret)
 	} else {
@@ -1363,7 +1390,7 @@ lchown :: proc "contextless" (name: cstring, uid: Uid, gid: Gid) -> (Errno) {
 	when size_of(int) == 4 {
 		ret := syscall(SYS_lchown32, cast(rawptr) name, uid, gid)
 		return Errno(-ret)
-	} else when ODIN_ARCH == .arm64 {
+	} else when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_fchownat, AT_FDCWD, cast(rawptr) name, uid, gid, transmute(i32) FD_Flags{.SYMLINK_NOFOLLOW})
 		return Errno(-ret)
 	} else {
@@ -1386,7 +1413,7 @@ umask :: proc "contextless" (mask: Mode) -> Mode {
 	Available since Linux 1.0.
 */
 gettimeofday :: proc "contextless" (tv: ^Time_Val) -> (Errno) {
-	ret := syscall(SYS_gettimeofday, tv)
+	ret := syscall(SYS_gettimeofday, tv, rawptr(nil))
 	return Errno(-ret)
 }
 
@@ -1432,8 +1459,9 @@ ptrace_traceme :: proc "contextless" (rq: PTrace_Traceme_Type) -> (Errno) {
 }
 
 ptrace_peek :: proc "contextless" (rq: PTrace_Peek_Type, pid: Pid, addr: uintptr) -> (uint, Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, addr)
-	return errno_unwrap(ret, uint)
+	res: uint = ---
+	ret := syscall(SYS_ptrace, rq, pid, addr, &res)
+	return res, Errno(-ret)
 }
 
 ptrace_poke :: proc "contextless" (rq: PTrace_Poke_Type, pid: Pid, addr: uintptr, data: uint) -> (Errno) {
@@ -1482,12 +1510,12 @@ ptrace_setregset :: proc "contextless" (rq: PTrace_Setregset_Type, pid: Pid, not
 }
 
 ptrace_getsiginfo :: proc "contextless" (rq: PTrace_Getsiginfo_Type, pid: Pid, si: ^Sig_Info) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, si)
+	ret := syscall(SYS_ptrace, rq, pid, si, rawptr(nil))
 	return Errno(-ret)
 }
 
 ptrace_peeksiginfo :: proc "contextless" (rq: PTrace_Peeksiginfo_Type, pid: Pid, si: ^Sig_Info) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, si)
+	ret := syscall(SYS_ptrace, rq, pid, si, rawptr(nil))
 	return Errno(-ret)
 }
 
@@ -1507,52 +1535,52 @@ ptrace_setoptions :: proc "contextless" (rq: PTrace_Setoptions_Type, pid: Pid, o
 }
 
 ptrace_geteventmsg :: proc "contextless" (rq: PTrace_Geteventmsg_Type, pid: Pid, msg: ^uint) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, msg)
+	ret := syscall(SYS_ptrace, rq, pid, msg, rawptr(nil))
 	return Errno(-ret)
 }
 
 ptrace_cont :: proc "contextless" (rq: PTrace_Cont_Type, pid: Pid, sig: Signal) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, sig)
+	ret := syscall(SYS_ptrace, rq, pid, rawptr(nil), sig)
 	return Errno(-ret)
 }
 
 ptrace_singlestep :: proc "contextless" (rq: PTrace_Singlestep_Type, pid: Pid, sig: Signal) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, sig)
+	ret := syscall(SYS_ptrace, rq, pid, rawptr(nil), sig)
 	return Errno(-ret)
 }
 
 ptrace_syscall :: proc "contextless" (rq: PTrace_Syscall_Type, pid: Pid, sig: Signal) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, sig)
+	ret := syscall(SYS_ptrace, rq, pid, rawptr(nil), sig)
 	return Errno(-ret)
 }
 
 ptrace_sysemu :: proc "contextless" (rq: PTrace_Sysemu_Type, pid: Pid, sig: Signal) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, sig)
+	ret := syscall(SYS_ptrace, rq, pid, rawptr(nil), sig)
 	return Errno(-ret)
 }
 
 ptrace_sysemu_singlestep :: proc "contextless" (rq: PTrace_Sysemu_Singlestep_Type, pid: Pid, sig: Signal) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, sig)
+	ret := syscall(SYS_ptrace, rq, pid, rawptr(nil), sig)
 	return Errno(-ret)
 }
 
 ptrace_listen :: proc "contextless" (rq: PTrace_Listen_Type, pid: Pid) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid)
+	ret := syscall(SYS_ptrace, rq, pid, 0, rawptr(nil))
 	return Errno(-ret)
 }
 
 ptrace_interrupt :: proc "contextless" (rq: PTrace_Interrupt_Type, pid: Pid) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid)
+	ret := syscall(SYS_ptrace, rq, pid, 0, rawptr(nil))
 	return Errno(-ret)
 }
 
 ptrace_attach :: proc "contextless" (rq: PTrace_Attach_Type, pid: Pid) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid)
+	ret := syscall(SYS_ptrace, rq, pid, 0, rawptr(nil))
 	return Errno(-ret)
 }
 
 ptrace_seize :: proc "contextless" (rq: PTrace_Seize_Type, pid: Pid, opt: PTrace_Options) -> (Errno) {
-	ret := syscall(SYS_ptrace, rq, pid, 0, transmute(u32) opt)
+	ret := syscall(SYS_ptrace, rq, pid, 0, transmute(u32) opt, rawptr(nil))
 	return Errno(-ret)
 }
 
@@ -1716,7 +1744,7 @@ getppid :: proc "contextless" () -> Pid {
 	Available since Linux 1.0.
 */
 getpgrp :: proc "contextless" () -> (Pid, Errno) {
-	when ODIN_ARCH == .arm64 {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 		ret := syscall(SYS_getpgid, 0)
 		return errno_unwrap(ret, Pid)
 	} else {
@@ -1939,11 +1967,11 @@ sigaltstack :: proc "contextless" (stack: ^Sig_Stack, old_stack: ^Sig_Stack) -> 
 	On ARM64 available since Linux 2.6.16.
 */
 mknod :: proc "contextless" (name: cstring, mode: Mode, dev: Dev) -> (Errno) {
-	when ODIN_ARCH == .arm64 {
-		ret := syscall(SYS_mknodat, AT_FDCWD, cast(rawptr) name, transmute(u32) mode, dev)
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
+		ret := syscall(SYS_mknodat, AT_FDCWD, cast(rawptr) name, transmute(u32) mode, cast(uint) dev)
 		return Errno(-ret)
 	} else {
-		ret := syscall(SYS_mknod, cast(rawptr) name, transmute(u32) mode, dev)
+		ret := syscall(SYS_mknod, cast(rawptr) name, transmute(u32) mode, cast(uint) dev)
 		return Errno(-ret)
 	}
 }
@@ -1983,10 +2011,10 @@ statfs :: proc "contextless" (path: cstring, statfs: ^Stat_FS) -> (Errno) {
 */
 fstatfs :: proc "contextless" (fd: Fd, statfs: ^Stat_FS) -> (Errno) {
 	when size_of(int) == 8 {
-		ret := syscall(SYS_statfs, fd, statfs)
+		ret := syscall(SYS_fstatfs, fd, statfs)
 		return Errno(-ret)
 	} else {
-		ret := syscall(SYS_statfs64, fd, size_of(Stat_FS), statfs)
+		ret := syscall(SYS_fstatfs64, fd, size_of(Stat_FS), statfs)
 		return Errno(-ret)
 	}
 }
@@ -2196,7 +2224,7 @@ gettid :: proc "contextless" () -> Pid {
 	Available since Linux 1.0.
 */
 time :: proc "contextless" (tloc: ^uint) -> (Errno) {
-	when ODIN_ARCH != .arm64 {
+	when ODIN_ARCH != .arm64 && ODIN_ARCH != .riscv64 {
 		ret := syscall(SYS_time, tloc)
 		return Errno(-ret)
 	} else {
@@ -2324,7 +2352,7 @@ futex :: proc{
 	Available since Linux 2.6.
 */
 epoll_create :: proc(size: i32 = 1) -> (Fd, Errno) {
-	when ODIN_ARCH != .arm64 {
+	when ODIN_ARCH != .arm64 && ODIN_ARCH != .riscv64 {
 		ret := syscall(SYS_epoll_create, i32(1))
 		return errno_unwrap(ret, Fd)
 	} else {
@@ -2393,17 +2421,44 @@ timer_delete :: proc "contextless" (timer: Timer) -> (Errno) {
 	return Errno(-ret)
 }
 
-// TODO(flysand): clock_settime
+/*
+	Set the time of the specified clock.
+	Available since Linux 2.6.
+*/
+clock_settime :: proc "contextless" (clock: Clock_Id, ts: ^Time_Spec) -> (Errno) {
+	ret := syscall(SYS_clock_settime, clock, ts)
+	return Errno(-ret)
+}
 
+/*
+	Retrieve the time of the specified clock.
+	Available since Linux 2.6.
+*/
 clock_gettime :: proc "contextless" (clock: Clock_Id) -> (ts: Time_Spec, err: Errno) {
 	ret := syscall(SYS_clock_gettime, clock, &ts)
 	err = Errno(-ret)
 	return
 }
 
-// TODO(flysand): clock_getres
 
-// TODO(flysand): clock_nanosleep
+/*
+	Finds the resolution of the specified clock.
+	Available since Linux 2.6.
+*/
+clock_getres :: proc "contextless" (clock: Clock_Id) -> (res: Time_Spec, err: Errno) {
+	ret := syscall(SYS_clock_getres, clock, &res)
+	err = Errno(-ret)
+	return
+}
+
+/*
+	Sleep for an interval specified with nanosecond precision.
+	Available since Linux 2.6.
+*/
+clock_nanosleep :: proc "contextless" (clock: Clock_Id, flags: ITimer_Flags, request: ^Time_Spec, remain: ^Time_Spec) -> (Errno) {
+	ret := syscall(SYS_clock_nanosleep, clock, transmute(u32) flags, request, remain)
+	return Errno(-ret)
+}
 
 /*
 	Exit the thread group.
@@ -2422,7 +2477,7 @@ exit_group :: proc "contextless" (code: i32) -> ! {
 	Available since Linux 2.6.
 */
 epoll_wait :: proc(epfd: Fd, events: [^]EPoll_Event, count: i32, timeout: i32) -> (i32, Errno) {
-	when ODIN_ARCH != .arm64 {
+	when ODIN_ARCH != .arm64 && ODIN_ARCH != .riscv64 {
 		ret := syscall(SYS_epoll_wait, epfd, events, count, timeout)
 		return errno_unwrap(ret, i32)
 	} else {
@@ -2497,11 +2552,30 @@ waitid :: proc "contextless" (id_type: Id_Type, id: Id, sig_info: ^Sig_Info, opt
 
 // TODO(flysand): ioprio_get
 
-// TODO(flysand): inotify_init
+inotify_init :: proc "contextless" () -> (Fd, Errno) {
+	when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
+		ret := syscall(SYS_inotify_init1, 0)
+		return errno_unwrap(ret, Fd)
+	} else {
+		ret := syscall(SYS_inotify_init)
+		return errno_unwrap(ret, Fd)
+	}
+}
 
-// TODO(flysand): inotify_add_watch
+inotify_init1 :: proc "contextless" (flags: Inotify_Init_Flags) -> (Fd, Errno) {
+	ret := syscall(SYS_inotify_init1, transmute(i32)flags)
+	return errno_unwrap(ret, Fd)
+}
 
-// TODO(flysand): inotify_rm_watch
+inotify_add_watch :: proc "contextless" (fd: Fd, pathname: cstring, mask: Inotify_Event_Mask) -> (Wd, Errno) {
+	ret := syscall(SYS_inotify_add_watch, fd, transmute(uintptr) pathname, transmute(u32) mask)
+	return errno_unwrap(ret, Wd)
+}
+
+inotify_rm_watch :: proc "contextless" (fd: Fd, wd: Wd) -> (Errno) {
+	ret := syscall(SYS_inotify_rm_watch, fd, wd)
+	return Errno(-ret)
+}
 
 // TODO(flysand): migrate_pages
 
@@ -2528,7 +2602,7 @@ mkdirat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode) -> (Errno) 
 	Available since Linux 2.6.16.
 */
 mknodat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode, dev: Dev) -> (Errno) {
-	ret := syscall(SYS_mknodat, dirfd, cast(rawptr) name, transmute(u32) mode, dev)
+	ret := syscall(SYS_mknodat, dirfd, cast(rawptr) name, transmute(u32) mode, cast(uint) dev)
 	return Errno(-ret)
 }
 
@@ -2616,9 +2690,9 @@ fchmodat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode, flags: FD_
 	Checks the user permissions for a file at specified dirfd.
 	Available since Linux 2.6.16.
 */
-faccessat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode = F_OK) -> (bool, Errno) {
+faccessat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode = F_OK) -> (Errno) {
 	ret := syscall(SYS_faccessat, dirfd, cast(rawptr) name, transmute(u32) mode)
-	return errno_unwrap(ret, bool)
+	return Errno(-ret)
 }
 
 /*
@@ -2626,13 +2700,8 @@ faccessat :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode = F_OK) ->
 	Available since Linux 2.6.16.
 */
 ppoll :: proc "contextless" (fds: []Poll_Fd, timeout: ^Time_Spec, sigmask: ^Sig_Set) -> (i32, Errno) {
-	when size_of(int) == 8 {
-		ret := syscall(SYS_ppoll, raw_data(fds), len(fds), timeout, sigmask, size_of(Sig_Set))
-		return errno_unwrap(ret, i32)
-	} else {
-		ret := syscall(SYS_ppoll_time64, raw_data(fds), len(fds), timeout, sigmask, size_of(Sig_Set))
-		return errno_unwrap(ret, i32)
-	}
+	ret := syscall(SYS_ppoll, raw_data(fds), len(fds), timeout, sigmask, size_of(Sig_Set))
+	return errno_unwrap(ret, i32)
 }
 
 // TODO(flysand): unshare
@@ -2916,9 +2985,9 @@ pidfd_getfd :: proc "contextless" (pidfd: Pid_FD, fd: Fd, flags: i32 = 0) -> (Fd
 	Checks the user permissions for a file at specified dirfd (with flags).
 	Available since Linux 5.8.
 */
-faccessat2 :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode = F_OK, flags: FD_Flags = FD_Flags{}) -> (bool, Errno) {
+faccessat2 :: proc "contextless" (dirfd: Fd, name: cstring, mode: Mode = F_OK, flags: FD_Flags = FD_Flags{}) -> (Errno) {
 	ret := syscall(SYS_faccessat2, dirfd, cast(rawptr) name, transmute(u32) mode, transmute(i32) flags)
-	return errno_unwrap(ret, bool)
+	return Errno(-ret)
 }
 
 // TODO(flysand): process_madvise
@@ -2955,3 +3024,18 @@ epoll_pwait2 :: proc(epfd: Fd, events: [^]EPoll_Event, count: i32, timeout: ^Tim
 // TODO(flysand): fchmodat2
 
 // TODO(flysand): map_shadow_stack
+
+when ODIN_ARCH == .riscv64 {
+	/*
+		Probe for RISC-V Hardware Support.
+		Available since Linux 6.4.
+
+		TODO: cpu_set_t
+
+		See: https://docs.kernel.org/arch/riscv/hwprobe.html
+	*/
+	riscv_hwprobe :: proc "contextless" (pairs: [^]RISCV_HWProbe, pair_count: uint, cpu_count: uint, cpus: rawptr /* cpu_set_t */, flags: RISCV_HWProbe_Flags) -> Errno {
+		ret := syscall(SYS_riscv_hwprobe, pairs, pair_count, cpu_count, cpus, transmute(u32)flags)
+		return Errno(-ret)
+	}
+}

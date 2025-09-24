@@ -3,7 +3,7 @@ package glfw_bindings
 import "core:c"
 import vk "vendor:vulkan"
 
-GLFW_SHARED :: #config(GLFW_SHARED, false)
+GLFW_SHARED :: #config(GLFW_SHARED, ODIN_OS != .Windows && ODIN_OS != .Darwin)
 
 when ODIN_OS == .Windows {
 	when GLFW_SHARED {
@@ -38,7 +38,17 @@ when ODIN_OS == .Windows {
 		}
 	}
 } else {
-	foreign import glfw "system:glfw"
+	when GLFW_SHARED {
+		foreign import glfw "system:glfw"
+	} else {
+		@(private)
+		LIBGLFW3 :: "../lib/libglfw3.a"
+		when !#exists(LIBGLFW3) {
+			#panic("Could not find the static glfw library, add it at \"" + ODIN_ROOT + "vendor/glfw/lib/\"`")
+		}
+
+		foreign import glfw { LIBGLFW3 }
+	}
 }
 
 #assert(size_of(c.int) == size_of(b32))
@@ -61,6 +71,7 @@ foreign glfw {
 	GetPrimaryMonitor      :: proc() -> MonitorHandle ---
 	GetMonitors            :: proc(count: ^c.int) -> [^]MonitorHandle ---
 	GetMonitorPos          :: proc(monitor: MonitorHandle, xpos, ypos: ^c.int) ---
+	GetMonitorWorkarea     :: proc(monitor: MonitorHandle, xpos, ypos, width, height: ^c.int) ---
 	GetMonitorPhysicalSize :: proc(monitor: MonitorHandle, widthMM, heightMM: ^c.int) ---
 	GetMonitorContentScale :: proc(monitor: MonitorHandle, xscale, yscale: ^f32) ---
 
@@ -152,9 +163,9 @@ foreign glfw {
 	SetJoystickUserPointer :: proc(jid: c.int, pointer: rawptr) ---
 	GetJoystickUserPointer :: proc(jid: c.int) -> rawptr ---
 	JoystickIsGamepad      :: proc(jid: c.int) -> b32 ---
-	UpdateGamepadMappings  :: proc(str: cstring) -> c.int ---
+	UpdateGamepadMappings  :: proc(str: cstring) -> b32 ---
 	GetGamepadName         :: proc(jid: c.int) -> cstring ---
-	GetGamepadState        :: proc(jid: c.int, state: ^GamepadState) -> c.int ---
+	GetGamepadState        :: proc(jid: c.int, state: ^GamepadState) -> b32 ---
 
 	SetClipboardString :: proc(window: WindowHandle, str: cstring) ---
 	
@@ -166,12 +177,12 @@ foreign glfw {
 	MakeContextCurrent :: proc(window: WindowHandle) ---
 	GetCurrentContext  :: proc() -> WindowHandle ---
 	GetProcAddress     :: proc(name: cstring) -> rawptr ---
-	ExtensionSupported :: proc(extension: cstring) -> c.int ---
+	ExtensionSupported :: proc(extension: cstring) -> b32 ---
 
 	VulkanSupported                      :: proc() -> b32 ---
 	GetRequiredInstanceExtensions        :: proc(count: ^u32) -> [^]cstring ---
 	GetInstanceProcAddress               :: proc(instance: vk.Instance, procname: cstring) -> rawptr ---
-	GetPhysicalDevicePresentationSupport :: proc(instance: vk.Instance, device: vk.PhysicalDevice, queuefamily: u32) -> c.int ---
+	GetPhysicalDevicePresentationSupport :: proc(instance: vk.Instance, device: vk.PhysicalDevice, queuefamily: u32) -> b32 ---
 	CreateWindowSurface                  :: proc(instance: vk.Instance, window: WindowHandle, allocator: ^vk.AllocationCallbacks, surface: ^vk.SurfaceKHR) -> vk.Result ---
 	
 	SetWindowIconifyCallback      :: proc(window: WindowHandle, cbfun: WindowIconifyProc)      -> WindowIconifyProc ---
@@ -182,7 +193,6 @@ foreign glfw {
 	SetWindowPosCallback          :: proc(window: WindowHandle, cbfun: WindowPosProc)          -> WindowPosProc ---
 	SetFramebufferSizeCallback    :: proc(window: WindowHandle, cbfun: FramebufferSizeProc)    -> FramebufferSizeProc ---
 	SetDropCallback               :: proc(window: WindowHandle, cbfun: DropProc)               -> DropProc ---
-	SetMonitorCallback            :: proc(window: WindowHandle, cbfun: MonitorProc)            -> MonitorProc ---
 	SetWindowMaximizeCallback     :: proc(window: WindowHandle, cbfun: WindowMaximizeProc)     -> WindowMaximizeProc ---
 	SetWindowContentScaleCallback :: proc(window: WindowHandle, cbfun: WindowContentScaleProc) -> WindowContentScaleProc ---
 
@@ -193,7 +203,9 @@ foreign glfw {
 	SetCharCallback        :: proc(window: WindowHandle, cbfun: CharProc)        -> CharProc ---
 	SetCharModsCallback    :: proc(window: WindowHandle, cbfun: CharModsProc)    -> CharModsProc ---
 	SetCursorEnterCallback :: proc(window: WindowHandle, cbfun: CursorEnterProc) -> CursorEnterProc ---
-	SetJoystickCallback    :: proc(cbfun: JoystickProc)    -> JoystickProc ---
+
+	SetMonitorCallback  :: proc(cbfun: MonitorProc)  -> MonitorProc ---
+	SetJoystickCallback :: proc(cbfun: JoystickProc) -> JoystickProc ---
 
 	SetErrorCallback :: proc(cbfun: ErrorProc) -> ErrorProc ---
 

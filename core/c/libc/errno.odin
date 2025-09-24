@@ -5,7 +5,7 @@ package libc
 when ODIN_OS == .Windows {
 	foreign import libc "system:libucrt.lib"
 } else when ODIN_OS == .Darwin {
-	foreign import libc "system:System.framework"
+	foreign import libc "system:System"
 } else {
 	foreign import libc "system:c"
 }
@@ -88,20 +88,29 @@ when ODIN_OS == .Haiku {
 		_get_errno :: proc() -> ^int ---
 	}
 
-	@(private="file")
-	B_GENERAL_ERROR_BASE :: min(i32)
-	@(private="file")
-	B_POSIX_ERROR_BASE   :: B_GENERAL_ERROR_BASE + 0x7000
+	_HAIKU_USE_POSITIVE_POSIX_ERRORS :: #config(HAIKU_USE_POSITIVE_POSIX_ERRORS, false)
+	_POSIX_ERROR_FACTOR              :: -1 when _HAIKU_USE_POSITIVE_POSIX_ERRORS else 1
 
-	EDOM   :: B_POSIX_ERROR_BASE + 16
-	EILSEQ :: B_POSIX_ERROR_BASE + 38
-	ERANGE :: B_POSIX_ERROR_BASE + 17
+	@(private="file") _GENERAL_ERROR_BASE :: min(int)
+	@(private="file") _POSIX_ERROR_BASE   :: _GENERAL_ERROR_BASE + 0x7000
+
+	EDOM   :: _POSIX_ERROR_FACTOR * (_POSIX_ERROR_BASE + 16)
+	EILSEQ :: _POSIX_ERROR_FACTOR * (_POSIX_ERROR_BASE + 38)
+	ERANGE :: _POSIX_ERROR_FACTOR * (_POSIX_ERROR_BASE + 17)
+}
+
+when ODIN_OS == .JS {
+	_ :: libc
+	_get_errno :: proc "c" () -> ^int {
+		@(static) errno: int
+		return &errno
+	}
 }
 
 // Odin has no way to make an identifier "errno" behave as a function call to
 // read the value, or to produce an lvalue such that you can assign a different
 // error value to errno. To work around this, just expose it as a function like
 // it actually is.
-errno :: #force_inline proc() -> ^int {
+errno :: #force_inline proc "contextless" () -> ^int {
 	return _get_errno()
 }

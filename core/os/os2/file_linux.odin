@@ -1,4 +1,4 @@
-//+private
+#+private
 package os2
 
 import "base:runtime"
@@ -6,6 +6,13 @@ import "core:io"
 import "core:time"
 import "core:sync"
 import "core:sys/linux"
+
+// Most implementations will EINVAL at some point when doing big writes.
+// In practice a read/write call would probably never read/write these big buffers all at once,
+// which is why the number of bytes is returned and why there are procs that will call this in a
+// loop for you.
+// We set a max of 1GB to keep alignment and to be safe.
+MAX_RW :: 1 << 30
 
 File_Impl :: struct {
 	file: File,
@@ -19,33 +26,18 @@ File_Impl :: struct {
 }
 
 _stdin := File{
-	impl = &File_Impl{
-		name = "/proc/self/fd/0",
-		fd = 0,
-		allocator = file_allocator(),
-	},
 	stream = {
 		procedure = _file_stream_proc,
 	},
 	fstat = _fstat,
 }
 _stdout := File{
-	impl = &File_Impl{
-		name = "/proc/self/fd/1",
-		fd = 1,
-		allocator = file_allocator(),
-	},
 	stream = {
 		procedure = _file_stream_proc,
 	},
 	fstat = _fstat,
 }
 _stderr := File{
-	impl = &File_Impl{
-		name = "/proc/self/fd/2",
-		fd = 2,
-		allocator = file_allocator(),
-	},
 	stream = {
 		procedure = _file_stream_proc,
 	},
@@ -53,26 +45,38 @@ _stderr := File{
 }
 
 @init
-_standard_stream_init :: proc() {
-	// cannot define these manually because cyclic reference
-	_stdin.stream.data = &_stdin
-	_stdout.stream.data = &_stdout
-	_stderr.stream.data = &_stderr
+_standard_stream_init :: proc "contextless" () {
+	new_std :: proc "contextless" (impl: ^File_Impl, fd: linux.Fd, name: string) -> ^File {
+		impl.file.impl = impl
+		impl.fd = linux.Fd(fd)
+		impl.allocator = runtime.nil_allocator()
+		impl.name = name
+		impl.file.stream = {
+			data = impl,
+			procedure = _file_stream_proc,
+		}
+		impl.file.fstat = _fstat
+		return &impl.file
+	}
 
-	stdin  = &_stdin
-	stdout = &_stdout
-	stderr = &_stderr
+	@(static) files: [3]File_Impl
+	stdin  = new_std(&files[0], 0, "/proc/self/fd/0")
+	stdout = new_std(&files[1], 1, "/proc/self/fd/1")
+	stderr = new_std(&files[2], 2, "/proc/self/fd/2")
 }
 
 _open :: proc(name: string, flags: File_Flags, perm: int) -> (f: ^File, err: Error) {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 
 	// Just default to using O_NOCTTY because needing to open a controlling
 	// terminal would be incredibly rare. This has no effect on files while
 	// allowing us to open serial devices.
 	sys_flags: linux.Open_Flags = {.NOCTTY, .CLOEXEC}
-	switch flags & O_RDONLY|O_WRONLY|O_RDWR {
+	when size_of(rawptr) == 4 {
+		sys_flags += {.LARGEFILE}
+	}
+	switch flags & (O_RDONLY|O_WRONLY|O_RDWR) {
 	case O_RDONLY:
 	case O_WRONLY: sys_flags += {.WRONLY}
 	case O_RDWR:   sys_flags += {.RDWR}
@@ -89,24 +93,41 @@ _open :: proc(name: string, flags: File_Flags, perm: int) -> (f: ^File, err: Err
 		return nil, _get_platform_error(errno)
 	}
 
-	return _new_file(uintptr(fd), name)
+	return _new_file(uintptr(fd), name, file_allocator())
 }
 
-_new_file :: proc(fd: uintptr, _: string = "") -> (f: ^File, err: Error) {
-	impl := new(File_Impl, file_allocator()) or_return
+_new_file :: proc(fd: uintptr, _: string, allocator: runtime.Allocator) -> (f: ^File, err: Error) {
+	impl := new(File_Impl, allocator) or_return
 	defer if err != nil {
-		free(impl, file_allocator())
+		free(impl, allocator)
 	}
 	impl.file.impl = impl
 	impl.fd = linux.Fd(fd)
-	impl.allocator = file_allocator()
-	impl.name = _get_full_path(impl.fd, file_allocator()) or_return
+	impl.allocator = allocator
+	impl.name = _get_full_path(impl.fd, impl.allocator) or_return
 	impl.file.stream = {
 		data = impl,
 		procedure = _file_stream_proc,
 	}
 	impl.file.fstat = _fstat
 	return &impl.file, nil
+}
+
+_clone :: proc(f: ^File) -> (clone: ^File, err: Error) {
+	if f == nil || f.impl == nil {
+		return
+	}
+
+	fd := (^File_Impl)(f.impl).fd
+
+	clonefd, errno := linux.dup(fd)
+	if errno != nil {
+		err = _get_platform_error(errno)
+		return
+	}
+	defer if err != nil { linux.close(clonefd) }
+
+	return _new_file(uintptr(clonefd), "", file_allocator())
 }
 
 
@@ -162,18 +183,31 @@ _name :: proc(f: ^File) -> string {
 }
 
 _seek :: proc(f: ^File_Impl, offset: i64, whence: io.Seek_From) -> (ret: i64, err: Error) {
+	// We have to handle this here, because Linux returns EINVAL for both
+	// invalid offsets and invalid whences.
+	switch whence {
+	case .Start, .Current, .End:
+		break
+	case:
+		return 0, .Invalid_Whence
+	}
 	n, errno := linux.lseek(f.fd, offset, linux.Seek_Whence(whence))
-	if errno != .NONE {
+	#partial switch errno {
+	case .EINVAL:
+		return 0, .Invalid_Offset
+	case .NONE:
+		return n, nil
+	case:
 		return -1, _get_platform_error(errno)
 	}
-	return n, nil
 }
 
 _read :: proc(f: ^File_Impl, p: []byte) -> (i64, Error) {
-	if len(p) == 0 {
+	if len(p) <= 0 {
 		return 0, nil
 	}
-	n, errno := linux.read(f.fd, p[:])
+
+	n, errno := linux.read(f.fd, p[:min(len(p), MAX_RW)])
 	if errno != .NONE {
 		return -1, _get_platform_error(errno)
 	}
@@ -181,10 +215,13 @@ _read :: proc(f: ^File_Impl, p: []byte) -> (i64, Error) {
 }
 
 _read_at :: proc(f: ^File_Impl, p: []byte, offset: i64) -> (i64, Error) {
+	if len(p) <= 0 {
+		return 0, nil
+	}
 	if offset < 0 {
 		return 0, .Invalid_Offset
 	}
-	n, errno := linux.pread(f.fd, p[:], offset)
+	n, errno := linux.pread(f.fd, p[:min(len(p), MAX_RW)], offset)
 	if errno != .NONE {
 		return -1, _get_platform_error(errno)
 	}
@@ -194,35 +231,58 @@ _read_at :: proc(f: ^File_Impl, p: []byte, offset: i64) -> (i64, Error) {
 	return i64(n), nil
 }
 
-_write :: proc(f: ^File_Impl, p: []byte) -> (i64, Error) {
-	if len(p) == 0 {
-		return 0, nil
+_write :: proc(f: ^File_Impl, p: []byte) -> (nt: i64, err: Error) {
+	p := p
+	for len(p) > 0 {
+		n, errno := linux.write(f.fd, p[:min(len(p), MAX_RW)])
+		if errno != .NONE {
+			err = _get_platform_error(errno)
+			return
+		}
+
+		p = p[n:]
+		nt += i64(n)
 	}
-	n, errno := linux.write(f.fd, p[:])
-	if errno != .NONE {
-		return -1, _get_platform_error(errno)
-	}
-	return i64(n), nil
+
+	return
 }
 
-_write_at :: proc(f: ^File_Impl, p: []byte, offset: i64) -> (i64, Error) {
+_write_at :: proc(f: ^File_Impl, p: []byte, offset: i64) -> (nt: i64, err: Error) {
 	if offset < 0 {
 		return 0, .Invalid_Offset
 	}
-	n, errno := linux.pwrite(f.fd, p[:], offset)
-	if errno != .NONE {
-		return -1, _get_platform_error(errno)
+
+	p := p
+	offset := offset
+	for len(p) > 0 {
+		n, errno := linux.pwrite(f.fd, p[:min(len(p), MAX_RW)], offset)
+		if errno != .NONE {
+			err = _get_platform_error(errno)
+			return
+		}
+
+		p = p[n:]
+		nt += i64(n)
+		offset += i64(n)
 	}
-	return i64(n), nil
+
+	return
 }
 
+@(no_sanitize_memory)
 _file_size :: proc(f: ^File_Impl) -> (n: i64, err: Error) {
+	// TODO: Identify 0-sized "pseudo" files and return No_Size. This would
+	//       eliminate the need for the _read_entire_pseudo_file procs.
 	s: linux.Stat = ---
 	errno := linux.fstat(f.fd, &s)
 	if errno != .NONE {
 		return -1, _get_platform_error(errno)
 	}
-	return i64(s.size), nil
+
+	if s.mode & linux.S_IFMT == linux.S_IFREG {
+		return i64(s.size), nil
+	}
+	return 0, .No_Size
 }
 
 _sync :: proc(f: ^File) -> Error {
@@ -240,53 +300,37 @@ _truncate :: proc(f: ^File, size: i64) -> Error {
 }
 
 _remove :: proc(name: string) -> Error {
-	is_dir_fd :: proc(fd: linux.Fd) -> bool {
-		s: linux.Stat
-		if linux.fstat(fd, &s) != .NONE {
-			return false
-		}
-		return linux.S_ISDIR(s.mode)
-	}
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
-
-	fd, errno := linux.open(name_cstr, {.NOFOLLOW})
-	#partial switch (errno) {
-	case .ELOOP:
-		/* symlink */
-	case .NONE:
-		defer linux.close(fd)
-		if is_dir_fd(fd) {
-			return _get_platform_error(linux.rmdir(name_cstr))
-		}
-	case:
-		return _get_platform_error(errno)
+	if fd, errno := linux.open(name_cstr, _OPENDIR_FLAGS + {.NOFOLLOW}); errno == .NONE {
+		linux.close(fd)
+		return _get_platform_error(linux.rmdir(name_cstr))
 	}
 
 	return _get_platform_error(linux.unlink(name_cstr))
 }
 
 _rename :: proc(old_name, new_name: string) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	old_name_cstr := temp_cstring(old_name) or_return
-	new_name_cstr := temp_cstring(new_name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	old_name_cstr := clone_to_cstring(old_name, temp_allocator) or_return
+	new_name_cstr := clone_to_cstring(new_name, temp_allocator) or_return
 
 	return _get_platform_error(linux.rename(old_name_cstr, new_name_cstr))
 }
 
 _link :: proc(old_name, new_name: string) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	old_name_cstr := temp_cstring(old_name) or_return
-	new_name_cstr := temp_cstring(new_name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	old_name_cstr := clone_to_cstring(old_name, temp_allocator) or_return
+	new_name_cstr := clone_to_cstring(new_name, temp_allocator) or_return
 
 	return _get_platform_error(linux.link(old_name_cstr, new_name_cstr))
 }
 
 _symlink :: proc(old_name, new_name: string) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	old_name_cstr := temp_cstring(old_name) or_return
-	new_name_cstr := temp_cstring(new_name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	old_name_cstr := clone_to_cstring(old_name, temp_allocator) or_return
+	new_name_cstr := clone_to_cstring(new_name, temp_allocator) or_return
 	return _get_platform_error(linux.symlink(old_name_cstr, new_name_cstr))
 }
 
@@ -309,14 +353,14 @@ _read_link_cstr :: proc(name_cstr: cstring, allocator: runtime.Allocator) -> (st
 }
 
 _read_link :: proc(name: string, allocator: runtime.Allocator) -> (s: string, e: Error) {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({ allocator })
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _read_link_cstr(name_cstr, allocator)
 }
 
 _chdir :: proc(name: string) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _get_platform_error(linux.chdir(name_cstr))
 }
 
@@ -326,8 +370,8 @@ _fchdir :: proc(f: ^File) -> Error {
 }
 
 _chmod :: proc(name: string, mode: int) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _get_platform_error(linux.chmod(name_cstr, transmute(linux.Mode)(u32(mode))))
 }
 
@@ -338,15 +382,15 @@ _fchmod :: proc(f: ^File, mode: int) -> Error {
 
 // NOTE: will throw error without super user priviledges
 _chown :: proc(name: string, uid, gid: int) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _get_platform_error(linux.chown(name_cstr, linux.Uid(uid), linux.Gid(gid)))
 }
 
 // NOTE: will throw error without super user priviledges
 _lchown :: proc(name: string, uid, gid: int) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _get_platform_error(linux.lchown(name_cstr, linux.Uid(uid), linux.Gid(gid)))
 }
 
@@ -357,8 +401,8 @@ _fchown :: proc(f: ^File, uid, gid: int) -> Error {
 }
 
 _chtimes :: proc(name: string, atime, mtime: time.Time) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr := temp_cstring(name) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	times := [2]linux.Time_Spec {
 		{
 			uint(atime._nsec) / uint(time.Second),
@@ -388,23 +432,17 @@ _fchtimes :: proc(f: ^File, atime, mtime: time.Time) -> Error {
 }
 
 _exists :: proc(name: string) -> bool {
-	TEMP_ALLOCATOR_GUARD()
-	name_cstr, _ := temp_cstring(name)
-	res, errno := linux.access(name_cstr, linux.F_OK)
-	return !res && errno == .NONE
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	name_cstr, _ := clone_to_cstring(name, temp_allocator)
+	return linux.access(name_cstr, linux.F_OK) == .NONE
 }
 
-/* Certain files in the Linux file system are not actual
- * files (e.g. everything in /proc/). Therefore, the
- * read_entire_file procs fail to actually read anything
- * since these "files" stat to a size of 0.  Here, we just
- * read until there is nothing left.
- */
+/* For reading Linux system files that stat to size 0 */
 _read_entire_pseudo_file :: proc { _read_entire_pseudo_file_string, _read_entire_pseudo_file_cstring }
 
 _read_entire_pseudo_file_string :: proc(name: string, allocator: runtime.Allocator) -> (b: []u8, e: Error) {
-	name_cstr := clone_to_cstring(name, allocator) or_return
-	defer delete(name, allocator)
+	temp_allocator := TEMP_ALLOCATOR_GUARD({ allocator })
+	name_cstr := clone_to_cstring(name, temp_allocator) or_return
 	return _read_entire_pseudo_file_cstring(name_cstr, allocator)
 }
 
@@ -434,7 +472,6 @@ _read_entire_pseudo_file_cstring :: proc(name: cstring, allocator: runtime.Alloc
 	}
 
 	resize(&contents, i + n)
-
 	return contents[:], nil
 }
 

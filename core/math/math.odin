@@ -406,6 +406,12 @@ remap :: proc "contextless" (old_value, old_min, old_max, new_min, new_max: $T) 
 }
 
 @(require_results)
+remap_clamped :: proc "contextless" (old_value, old_min, old_max, new_min, new_max: $T) -> (x: T) where intrinsics.type_is_numeric(T), !intrinsics.type_is_array(T) {
+	remapped := #force_inline remap(old_value, old_min, old_max, new_min, new_max)
+	return clamp(remapped, new_min, new_max)
+}
+
+@(require_results)
 wrap :: proc "contextless" (x, y: $T) -> T where intrinsics.type_is_numeric(T), !intrinsics.type_is_array(T) {
 	tmp := mod(x, y)
 	return y + tmp if tmp < 0 else tmp
@@ -438,11 +444,11 @@ bias :: proc "contextless" (t, b: $T) -> T where intrinsics.type_is_numeric(T) {
 	return t / (((1/b) - 2) * (1 - t) + 1)
 }
 @(require_results)
-gain :: proc "contextless" (t, g: $T) -> T where intrinsics.type_is_numeric(T) {
+gain :: proc "contextless" (t, g: $T) -> T where intrinsics.type_is_float(T) {
 	if t < 0.5 {
-		return bias(t*2, g)*0.5
+		return bias(t*2, g) * 0.5
 	}
-	return bias(t*2 - 1, 1 - g)*0.5 + 0.5
+	return bias(t*2 - 1, 1 - g) * 0.5 + 0.5
 }
 
 
@@ -1265,7 +1271,7 @@ binomial :: proc "contextless" (n, k: int) -> int {
 	}
 
 	b := n
-	for i in 2..<k {
+	for i in 2..=k {
 		b = (b * (n+1-i))/i
 	}
 	return b
@@ -2290,7 +2296,7 @@ nextafter_f16 :: proc "contextless" (x, y: f16) -> (r: f16) {
 	case x == y:
 		r = x
 	case x == 0:
-		r = copy_sign_f16(1, y)
+		r = copy_sign_f16(transmute(f16)u16(1), y)
 	case (y > x) == (x > 0):
 		r = transmute(f16)(transmute(u16)x + 1)
 	case:
@@ -2306,7 +2312,7 @@ nextafter_f32 :: proc "contextless" (x, y: f32) -> (r: f32) {
 	case x == y:
 		r = x
 	case x == 0:
-		r = copy_sign_f32(1, y)
+		r = copy_sign_f32(transmute(f32)u32(1), y)
 	case (y > x) == (x > 0):
 		r = transmute(f32)(transmute(u32)x + 1)
 	case:
@@ -2322,7 +2328,7 @@ nextafter_f64 :: proc "contextless" (x, y: f64) -> (r: f64) {
 	case x == y:
 		r = x
 	case x == 0:
-		r = copy_sign_f64(1, y)
+		r = copy_sign_f64(transmute(f64)u64(1), y)
 	case (y > x) == (x > 0):
 		r = transmute(f64)(transmute(u64)x + 1)
 	case:
@@ -2342,32 +2348,6 @@ nextafter :: proc{
 	nextafter_f32, nextafter_f32le, nextafter_f32be,
 	nextafter_f64, nextafter_f64le, nextafter_f64be,
 }
-
-@(require_results)
-signbit_f16 :: proc "contextless" (x: f16) -> bool {
-	return (transmute(u16)x)&(1<<15) != 0
-}
-@(require_results)
-signbit_f32 :: proc "contextless" (x: f32) -> bool {
-	return (transmute(u32)x)&(1<<31) != 0
-}
-@(require_results)
-signbit_f64 :: proc "contextless" (x: f64) -> bool {
-	return (transmute(u64)x)&(1<<63) != 0
-}
-@(require_results) signbit_f16le :: proc "contextless" (x: f16le) -> bool { return signbit_f16(f16(x)) }
-@(require_results) signbit_f32le :: proc "contextless" (x: f32le) -> bool { return signbit_f32(f32(x)) }
-@(require_results) signbit_f64le :: proc "contextless" (x: f64le) -> bool { return signbit_f64(f64(x)) }
-@(require_results) signbit_f16be :: proc "contextless" (x: f16be) -> bool { return signbit_f16(f16(x)) }
-@(require_results) signbit_f32be :: proc "contextless" (x: f32be) -> bool { return signbit_f32(f32(x)) }
-@(require_results) signbit_f64be :: proc "contextless" (x: f64be) -> bool { return signbit_f64(f64(x)) }
-
-signbit :: proc{
-	signbit_f16, signbit_f16le, signbit_f16be,
-	signbit_f32, signbit_f32le, signbit_f32be,
-	signbit_f64, signbit_f64le, signbit_f64be,
-}
-
 
 @(require_results)
 hypot_f16 :: proc "contextless" (x, y: f16) -> (r: f16) {
@@ -2441,6 +2421,36 @@ hypot :: proc{
 	hypot_f16, hypot_f16le, hypot_f16be,
 	hypot_f32, hypot_f32le, hypot_f32be,
 	hypot_f64, hypot_f64le, hypot_f64be,
+}
+
+@(require_results)
+count_digits_of_base :: proc "contextless" (value: $T, $base: int) -> (digits: int) where intrinsics.type_is_integer(T) {
+	#assert(base >= 2, "base must be 2 or greater.")
+
+	value := value
+	when !intrinsics.type_is_unsigned(T) {
+		value = abs(value)
+	}
+
+	when base == 2 {
+		digits = max(1, 8 * size_of(T) - int(intrinsics.count_leading_zeros(value)))
+	} else when intrinsics.count_ones(base) == 1 {
+		free_bits := 8 * size_of(T) - int(intrinsics.count_leading_zeros(value))
+		digits, free_bits = divmod(free_bits, intrinsics.constant_log2(base))
+		if free_bits > 0 {
+			digits += 1
+		}
+		digits = max(1, digits)
+	} else {
+		digits = 1
+		base := cast(T)base
+		for value >= base {
+			value /= base
+			digits += 1
+		}
+	}
+
+	return
 }
 
 F16_DIG        :: 3

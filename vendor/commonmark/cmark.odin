@@ -7,7 +7,6 @@
 package vendor_commonmark
 
 import "core:c"
-import "core:c/libc"
 import "base:runtime"
 
 COMMONMARK_SHARED :: #config(COMMONMARK_SHARED, false)
@@ -338,7 +337,7 @@ foreign lib {
 	node_set_list_tight :: proc(node: ^Node, tight: b32) -> (success: b32) ---
 
 	// Returns the info string from a fenced code block.
-	get_fence_info :: proc(node: ^Node) -> (fence_info: cstring) ---
+	node_get_fence_info :: proc(node: ^Node) -> (fence_info: cstring) ---
 
 	// Sets the info string in a fenced code block, returning `true` on success and `false` on failure.
 	node_set_fence_info :: proc(node: ^Node, fence_info: cstring) -> (success: b32) ---
@@ -450,7 +449,7 @@ foreign lib {
 	// Called `parse_from_libc_file` so as not to confuse with Odin's file handling.
 
 	@(link_name = "parse_from_file")
-	parse_from_libc_file :: proc(file: ^libc.FILE, options: Options) -> (root: ^Node) ---
+	parse_from_libc_file :: proc(file: ^c.FILE, options: Options) -> (root: ^Node) ---
 }
 
 parser_feed_from_string :: proc "c" (parser: ^Parser, s: string) {

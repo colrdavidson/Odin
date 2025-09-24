@@ -20,12 +20,11 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//+build amd64
+#+build amd64
 package aes_hw_intel
 
 import "base:intrinsics"
 import "core:crypto/_aes"
-import "core:simd"
 import "core:simd/x86"
 
 @(private = "file")
@@ -53,19 +52,16 @@ GHASH_STRIDE_BYTES_HW :: GHASH_STRIDE_HW * _aes.GHASH_BLOCK_SIZE
 // that it is right-shifted by 1 bit. The left-shift is relatively
 // inexpensive, and it can be mutualised.
 //
-// Since SSE2 opcodes do not have facilities for shitfting full 128-bit
+// Since SSE2 opcodes do not have facilities for shifting full 128-bit
 // values with bit precision, we have to break down values into 64-bit
 // chunks. We number chunks from 0 to 3 in left to right order.
 
 @(private = "file")
-byteswap_index := transmute(x86.__m128i)simd.i8x16{
-	// Note: simd.i8x16 is reverse order from x86._mm_set_epi8.
-	15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-}
+_BYTESWAP_INDEX: x86.__m128i : { 0x08090a0b0c0d0e0f, 0x0001020304050607 }
 
 @(private = "file", require_results, enable_target_feature = "sse2,ssse3")
 byteswap :: #force_inline proc "contextless" (x: x86.__m128i) -> x86.__m128i {
-	return x86._mm_shuffle_epi8(x, byteswap_index)
+	return x86._mm_shuffle_epi8(x, _BYTESWAP_INDEX)
 }
 
 // From a 128-bit value kw, compute kx as the XOR of the two 64-bit
@@ -159,7 +155,7 @@ square_f128 :: #force_inline proc "contextless" (kw: x86.__m128i) -> (x86.__m128
 @(enable_target_feature = "sse2,ssse3,pclmul")
 ghash :: proc "contextless" (dst, key, data: []byte) #no_bounds_check {
 	if len(dst) != _aes.GHASH_BLOCK_SIZE || len(key) != _aes.GHASH_BLOCK_SIZE {
-		intrinsics.trap()
+		panic_contextless("aes/ghash: invalid dst or key size")
 	}
 
 	// Note: BearSSL opts to copy the remainder into a zero-filled
@@ -244,8 +240,8 @@ ghash :: proc "contextless" (dst, key, data: []byte) #no_bounds_check {
 	}
 
 	// Process 1 block at a time
-	src: []byte
 	for l > 0 {
+		src: []byte = ---
 		if l >= _aes.GHASH_BLOCK_SIZE {
 			src = buf
 			buf = buf[_aes.GHASH_BLOCK_SIZE:]

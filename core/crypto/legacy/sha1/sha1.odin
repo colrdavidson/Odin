@@ -5,9 +5,9 @@ WARNING: The SHA1 algorithm is known to be insecure and should only be
 used for interoperating with legacy applications.
 
 See:
-- https://eprint.iacr.org/2017/190
-- https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf
-- https://datatracker.ietf.org/doc/html/rfc3174
+- [[ https://eprint.iacr.org/2017/190 ]]
+- [[ https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf ]]
+- [[ https://datatracker.ietf.org/doc/html/rfc3174 ]]
 */
 package sha1
 
@@ -60,7 +60,7 @@ init :: proc(ctx: ^Context) {
 
 // update adds more data to the Context.
 update :: proc(ctx: ^Context, data: []byte) {
-	assert(ctx.is_initialized)
+	ensure(ctx.is_initialized)
 
 	for i := 0; i < len(data); i += 1 {
 		ctx.data[ctx.datalen] = data[i]
@@ -79,11 +79,8 @@ update :: proc(ctx: ^Context, data: []byte) {
 // Iff finalize_clone is set, final will work on a copy of the Context,
 // which is useful for for calculating rolling digests.
 final :: proc(ctx: ^Context, hash: []byte, finalize_clone: bool = false) {
-	assert(ctx.is_initialized)
-
-	if len(hash) < DIGEST_SIZE {
-		panic("crypto/sha1: invalid destination digest size")
-	}
+	ensure(ctx.is_initialized)
+	ensure(len(hash) >= DIGEST_SIZE, "crypto/sha1: invalid destination digest size")
 
 	ctx := ctx
 	if finalize_clone {

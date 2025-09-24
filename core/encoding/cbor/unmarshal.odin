@@ -29,6 +29,7 @@ an input.
 unmarshal :: proc {
 	unmarshal_from_reader,
 	unmarshal_from_string,
+	unmarshal_from_bytes,
 }
 
 unmarshal_from_reader :: proc(r: io.Reader, ptr: ^$T, flags := Decoder_Flags{}, allocator := context.allocator, temp_allocator := context.temp_allocator, loc := #caller_location) -> (err: Unmarshal_Error) {
@@ -49,6 +50,11 @@ unmarshal_from_string :: proc(s: string, ptr: ^$T, flags := Decoder_Flags{}, all
 	// Normal EOF does not exist here, we try to read the exact amount that is said to be provided.
 	if err == .EOF { err = .Unexpected_EOF }
 	return
+}
+
+// Unmarshals from a slice of bytes, see docs on the proc group `Unmarshal` for more info.
+unmarshal_from_bytes :: proc(bytes: []byte, ptr: ^$T, flags := Decoder_Flags{}, allocator := context.allocator, temp_allocator := context.temp_allocator, loc := #caller_location) -> (err: Unmarshal_Error) {
+	return unmarshal_from_string(string(bytes), ptr, flags, allocator, temp_allocator, loc)
 }
 
 unmarshal_from_decoder :: proc(d: Decoder, ptr: ^$T, allocator := context.allocator, temp_allocator := context.temp_allocator, loc := #caller_location) -> (err: Unmarshal_Error) {
@@ -329,6 +335,8 @@ _unmarshal_value :: proc(d: Decoder, v: any, hdr: Header, allocator := context.a
 _unmarshal_bytes :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header, add: Add, allocator := context.allocator, loc := #caller_location) -> (err: Unmarshal_Error) {
 	#partial switch t in ti.variant {
 	case reflect.Type_Info_String:
+		assert(t.encoding == .UTF_8)
+
 		bytes := err_conv(_decode_bytes(d, add, allocator=allocator, loc=loc)) or_return
 
 		if t.is_cstring {
@@ -442,9 +450,6 @@ _unmarshal_array :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header
 		loc := #caller_location,
 	) -> (out_of_space: bool, err: Unmarshal_Error) {
 		for idx: uintptr = 0; length == -1 || idx < uintptr(length); idx += 1 {
-			elem_ptr := rawptr(uintptr(da.data) + idx*uintptr(elemt.size))
-			elem     := any{elem_ptr, elemt.id}
-
 			hdr := _decode_header(d.reader) or_return
 			
 			// Double size if out of capacity.
@@ -459,6 +464,10 @@ _unmarshal_array :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header
 				if !ok { return false, .Out_Of_Memory }
 			}
 			
+			// Set ptr after potential resizes to avoid invalidation.
+			elem_ptr := rawptr(uintptr(da.data) + idx*uintptr(elemt.size))
+			elem     := any{elem_ptr, elemt.id}
+
 			err = _unmarshal_value(d, elem, hdr, allocator=allocator, loc=loc)
 			if length == -1 && err == .Break { break }
 			if err != nil { return }
@@ -486,7 +495,7 @@ _unmarshal_array :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header
 		data := mem.alloc_bytes_non_zeroed(t.elem.size * scap, t.elem.align, allocator=allocator, loc=loc) or_return
 		defer if err != nil { mem.free_bytes(data, allocator=allocator, loc=loc) }
 
-		da := mem.Raw_Dynamic_Array{raw_data(data), 0, length, context.allocator }
+		da := mem.Raw_Dynamic_Array{raw_data(data), 0, scap, context.allocator }
 
 		assign_array(d, &da, t.elem, length) or_return
 
@@ -509,7 +518,7 @@ _unmarshal_array :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header
 		raw           := (^mem.Raw_Dynamic_Array)(v.data)
 		raw.data       = raw_data(data) 
 		raw.len        = 0
-		raw.cap        = length
+		raw.cap        = scap
 		raw.allocator  = context.allocator
 
 		_ = assign_array(d, raw, t.elem, length) or_return
@@ -584,6 +593,31 @@ _unmarshal_array :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header
 		if out_of_space { return _unsupported(v, hdr) }
 		return
 
+	case reflect.Type_Info_Matrix:
+		count := t.column_count * t.elem_stride
+		length, _ := err_conv(_decode_len_container(d, add)) or_return
+		if length > count {
+			return _unsupported(v, hdr)
+		}
+
+		da := mem.Raw_Dynamic_Array{rawptr(v.data), 0, length, allocator }
+
+		out_of_space := assign_array(d, &da, t.elem, length, growable=false) or_return
+		if out_of_space { return _unsupported(v, hdr) }
+		return
+
+	case reflect.Type_Info_Simd_Vector:
+		length, _ := err_conv(_decode_len_container(d, add)) or_return
+		if length > t.count {
+			return _unsupported(v, hdr)
+		}
+
+		da := mem.Raw_Dynamic_Array{rawptr(v.data), 0, length, allocator }
+
+		out_of_space := assign_array(d, &da, t.elem, length, growable=false) or_return
+		if out_of_space { return _unsupported(v, hdr) }
+		return
+
 	case: return _unsupported(v, hdr)
 	}
 }
@@ -627,7 +661,8 @@ _unmarshal_map :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header, 
 		unknown := length == -1
 		fields := reflect.struct_fields_zipped(ti.id)
 
-		for idx := 0; idx < len(fields) && (unknown || idx < length); idx += 1 {
+		idx := 0
+		for ; idx < len(fields) && (unknown || idx < length); idx += 1 {
 			// Decode key, keys can only be strings.
 			key: string
 			if keyv, kerr := decode_key(d, v, context.temp_allocator); unknown && kerr == .Break {
@@ -662,6 +697,8 @@ _unmarshal_map :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header, 
 				
 				// Skips unused map entries.
 				if use_field_idx < 0 {
+					val := err_conv(_decode_from_decoder(d, allocator=context.temp_allocator)) or_return
+					destroy(val, context.temp_allocator)
 					continue
 				}
 			}
@@ -672,13 +709,20 @@ _unmarshal_map :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header, 
 			fany  := any{ptr, field.type.id}
 			_unmarshal_value(d, fany, _decode_header(r) or_return) or_return
 		}
+
+		// If there are fields left in the map that did not get decoded into the struct, decode and discard them.
+		if !unknown {
+			for _ in idx..<length {
+				key := err_conv(_decode_from_decoder(d, allocator=context.temp_allocator)) or_return
+				destroy(key, context.temp_allocator)
+				val := err_conv(_decode_from_decoder(d, allocator=context.temp_allocator)) or_return
+				destroy(val, context.temp_allocator)
+			}
+		}
+
 		return
 
 	case reflect.Type_Info_Map:
-		if !reflect.is_string(t.key) {
-			return _unsupported(v, hdr)
-		}
-
 		raw_map := (^mem.Raw_Map)(v.data)
 		if raw_map.allocator.procedure == nil {
 			raw_map.allocator = context.allocator
@@ -695,43 +739,31 @@ _unmarshal_map :: proc(d: Decoder, v: any, ti: ^reflect.Type_Info, hdr: Header, 
 			new_len := uintptr(min(scap, runtime.map_len(raw_map^)+length))
 			runtime.map_reserve_dynamic(raw_map, t.map_info, new_len) or_return
 		}
-		
-		// Temporary memory to unmarshal keys into before inserting them into the map.
+
+		// Temporary memory to unmarshal values into before inserting them into the map.
 		elem_backing := mem.alloc_bytes_non_zeroed(t.value.size, t.value.align, context.temp_allocator) or_return
 		defer delete(elem_backing, context.temp_allocator)
-
 		map_backing_value := any{raw_data(elem_backing), t.value.id}
 
-		for idx := 0; unknown || idx < length; idx += 1 {
-			// Decode key, keys can only be strings.
-			key: string
-			if keyv, kerr := decode_key(d, v); unknown && kerr == .Break {
-				break
-			} else if kerr != nil {
-				err = kerr
-				return
-			} else {
-				key = keyv
-			}
+		// Temporary memory to unmarshal keys into.
+		key_backing := mem.alloc_bytes_non_zeroed(t.key.size, t.key.align, context.temp_allocator) or_return
+		defer delete(key_backing, context.temp_allocator)
+		key_backing_value := any{raw_data(key_backing), t.key.id}
 
+		for idx := 0; unknown || idx < length; idx += 1 {
 			if unknown || idx > scap {
 				// Reserve space for new element so we can return allocator errors.
 				new_len := uintptr(runtime.map_len(raw_map^)+1)
 				runtime.map_reserve_dynamic(raw_map, t.map_info, new_len) or_return
 			}
 
+			mem.zero_slice(key_backing)
+			_unmarshal_value(d, key_backing_value, _decode_header(r) or_return) or_return
+
 			mem.zero_slice(elem_backing)
 			_unmarshal_value(d, map_backing_value, _decode_header(r) or_return) or_return
 
-			key_ptr := rawptr(&key)
-			key_cstr: cstring
-			if reflect.is_cstring(t.key) {
-				assert_safe_for_cstring(key)
-				key_cstr = cstring(raw_data(key))
-				key_ptr = &key_cstr
-			}
-
-			set_ptr := runtime.__dynamic_map_set_without_hash(raw_map, t.map_info, key_ptr, map_backing_value.data)
+			set_ptr := runtime.__dynamic_map_set_without_hash(raw_map, t.map_info, key_backing_value.data, map_backing_value.data)
 			// We already reserved space for it, so this shouldn't fail.
 			assert(set_ptr != nil)
 		}

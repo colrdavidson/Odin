@@ -1,4 +1,4 @@
-// +build windows
+#+build windows
 package sys_windows
 
 foreign import kernel32 "system:Kernel32.lib"
@@ -20,6 +20,15 @@ COMMON_LVB_GRID_RVERTICAL  :: WORD(0x1000)
 COMMON_LVB_REVERSE_VIDEO   :: WORD(0x4000)
 COMMON_LVB_UNDERSCORE      :: WORD(0x8000)
 COMMON_LVB_SBCSDBCS        :: WORD(0x0300)
+EV_BREAK                   :: DWORD(0x0040)
+EV_CTS                     :: DWORD(0x0008)
+EV_DSR                     :: DWORD(0x0010)
+EV_ERR                     :: DWORD(0x0080)
+EV_RING                    :: DWORD(0x0100)
+EV_RLSD                    :: DWORD(0x0020)
+EV_RXCHAR                  :: DWORD(0x0001)
+EV_RXFLAG                  :: DWORD(0x0002)
+EV_TXEMPTY                 :: DWORD(0x0004)
 
 @(default_calling_convention="system")
 foreign kernel32 {
@@ -85,6 +94,10 @@ foreign kernel32 {
 	                        lpTargetFileName: LPCWSTR,
 	                        lpSecurityAttributes: LPSECURITY_ATTRIBUTES) -> BOOL ---
 
+	CreateSymbolicLinkW :: proc(lpSymlinkFileName: LPCWSTR,
+	                            lpTargetFileName:  LPCWSTR,
+	                            dwFlags:           DWORD) -> BOOLEAN ---
+
 	GetFileInformationByHandleEx :: proc(hFile: HANDLE,
 	                                     fileInfoClass: FILE_INFO_BY_HANDLE_CLASS,
 	                                     lpFileInformation: LPVOID,
@@ -105,9 +118,12 @@ foreign kernel32 {
 	ClearCommError :: proc(hFile: HANDLE, lpErrors: ^Com_Error, lpStat: ^COMSTAT) -> BOOL ---
 	GetCommState :: proc(handle: HANDLE, dcb: ^DCB) -> BOOL ---
 	SetCommState :: proc(handle: HANDLE, dcb: ^DCB) -> BOOL ---
-	GetCommPorts :: proc(lpPortNumbers: PULONG, uPortNumbersCount: ULONG, puPortNumbersFound: PULONG) -> ULONG ---
+	SetCommMask :: proc(handle: HANDLE, dwEvtMap: DWORD) -> BOOL ---
+	GetCommMask :: proc(handle: HANDLE, lpEvtMask: LPDWORD) -> BOOL ---
+	WaitCommEvent :: proc(handle: HANDLE, lpEvtMask: LPDWORD, lpOverlapped: LPOVERLAPPED) -> BOOL ---
 	GetCommandLineW :: proc() -> LPCWSTR ---
 	GetTempPathW :: proc(nBufferLength: DWORD, lpBuffer: LPCWSTR) -> DWORD ---
+	GetTempFileNameW :: proc(lpPathName: LPCWSTR, lpPrefixString: LPCWSTR, uUnique: c_int, lpTempFileName: LPWSTR) -> c_uint ---
 	GetCurrentProcess :: proc() -> HANDLE ---
 	GetCurrentProcessId :: proc() -> DWORD ---
 	GetCurrentThread :: proc() -> HANDLE ---
@@ -152,6 +168,7 @@ foreign kernel32 {
 	ResumeThread :: proc(thread: HANDLE) -> DWORD ---
 	GetThreadPriority :: proc(thread: HANDLE) -> c_int ---
 	SetThreadPriority :: proc(thread: HANDLE, priority: c_int) -> BOOL ---
+	GetThreadDescription :: proc(hThread: HANDLE, ppszThreadDescription: ^PCWSTR) -> HRESULT ---
 	SetThreadDescription :: proc(hThread: HANDLE, lpThreadDescription: PCWSTR) -> HRESULT ---
 	GetExitCodeThread :: proc(thread: HANDLE, exit_code: ^DWORD) -> BOOL ---
 	TerminateThread :: proc(thread: HANDLE, exit_code: DWORD) -> BOOL ---
@@ -235,9 +252,13 @@ foreign kernel32 {
 		hThread: HANDLE,
 		lpContext: LPCONTEXT,
 	) -> BOOL ---
+	SetThreadContext :: proc(
+		hThread: HANDLE,
+		lpContext: LPCONTEXT,
+	) -> BOOL ---
 	CreateProcessW :: proc(
 		lpApplicationName: LPCWSTR,
-		lpCommandLine: LPWSTR,
+		lpCommandLine: LPCWSTR,
 		lpProcessAttributes: LPSECURITY_ATTRIBUTES,
 		lpThreadAttributes: LPSECURITY_ATTRIBUTES,
 		bInheritHandles: BOOL,
@@ -352,6 +373,12 @@ foreign kernel32 {
 		bInitialState: BOOL,
 		lpName: LPCWSTR,
 	) -> HANDLE ---
+	CreateEventExW :: proc(
+		lpEventAttributes: LPSECURITY_ATTRIBUTES,
+		lpName: LPCWSTR,
+		dwFlags: DWORD,
+		dwDesiredAccess: DWORD,
+	) -> HANDLE ---
 	ResetEvent :: proc(hEvent: HANDLE) -> BOOL ---
 	SetEvent :: proc(hEvent: HANDLE) -> BOOL ---
 	WaitForMultipleObjects :: proc(
@@ -377,7 +404,16 @@ foreign kernel32 {
 		nDefaultTimeOut: DWORD,
 		lpSecurityAttributes: LPSECURITY_ATTRIBUTES,
 	) -> HANDLE ---
+	PeekNamedPipe :: proc(
+		hNamedPipe: HANDLE,
+		lpBuffer: rawptr,
+		nBufferSize: u32,
+		lpBytesRead: ^u32,
+		lpTotalBytesAvail: ^u32,
+		lpBytesLeftThisMessage: ^u32,
+	) -> BOOL ---
 	CancelIo :: proc(handle: HANDLE) -> BOOL ---
+	CancelIoEx :: proc(hFile: HANDLE, lpOverlapped: LPOVERLAPPED) -> BOOL ---
 	GetOverlappedResult :: proc(
 		hFile: HANDLE,
 		lpOverlapped: LPOVERLAPPED,
@@ -396,6 +432,9 @@ foreign kernel32 {
 	GlobalAlloc :: proc(flags: UINT, bytes: SIZE_T) -> LPVOID ---
 	GlobalReAlloc :: proc(mem: LPVOID, bytes: SIZE_T, flags: UINT) -> LPVOID ---
 	GlobalFree :: proc(mem: LPVOID) -> LPVOID ---
+	
+	GlobalLock :: proc(hMem: HGLOBAL) -> LPVOID ---
+	GlobalUnlock :: proc(hMem: HGLOBAL) -> BOOL ---
 
 	ReadDirectoryChangesW :: proc(
 		hDirectory: HANDLE,
@@ -516,6 +555,7 @@ foreign kernel32 {
 	GetHandleInformation :: proc(hObject: HANDLE, lpdwFlags: ^DWORD) -> BOOL ---
 
 	RtlCaptureStackBackTrace :: proc(FramesToSkip: ULONG, FramesToCapture: ULONG, BackTrace: [^]PVOID, BackTraceHash: PULONG) -> USHORT ---
+	RtlNtStatusToDosError :: proc(status: NTSTATUS) -> ULONG ---
 
 	GetSystemPowerStatus :: proc(lpSystemPowerStatus: ^SYSTEM_POWER_STATUS) -> BOOL ---
 }
@@ -826,7 +866,6 @@ MEMORY_RESOURCE_NOTIFICATION_TYPE :: enum c_int {
 LowMemoryResourceNotification  :: MEMORY_RESOURCE_NOTIFICATION_TYPE.LowMemoryResourceNotification
 HighMemoryResourceNotification :: MEMORY_RESOURCE_NOTIFICATION_TYPE.HighMemoryResourceNotification
 
-
 @(default_calling_convention="system")
 foreign kernel32 {
 	CreateMemoryResourceNotification :: proc(
@@ -1053,6 +1092,11 @@ foreign one_core {
 		PageProtection: ULONG,
 		PreferredNode: ULONG,
 	) -> PVOID ---
+	GetCommPorts :: proc(
+		lpPortNumbers: PULONG,
+		uPortNumbersCount: ULONG,
+		puPortNumbersFound: PULONG,
+	) -> ULONG ---
 }
 
 
@@ -1158,7 +1202,7 @@ DUMMYUNIONNAME_u :: struct #raw_union {
 SYSTEM_LOGICAL_PROCESSOR_INFORMATION :: struct {
 	ProcessorMask: ULONG_PTR,
 	Relationship: LOGICAL_PROCESSOR_RELATIONSHIP,
-	DummyUnion: DUMMYUNIONNAME_u,
+	using DummyUnion: DUMMYUNIONNAME_u,
 }
 
 SYSTEM_POWER_STATUS :: struct {
@@ -1171,17 +1215,17 @@ SYSTEM_POWER_STATUS :: struct {
 }
 
 AC_Line_Status :: enum BYTE {
-   Offline = 0,
-   Online  = 1,
-   Unknown = 255,
+	Offline = 0,
+	Online  = 1,
+	Unknown = 255,
 }
 
 Battery_Flag :: enum BYTE {
-    High     = 0,
-    Low      = 1,
-    Critical = 2,
-    Charging = 3,
-    No_Battery = 7,
+	High     = 0,
+	Low      = 1,
+	Critical = 2,
+	Charging = 3,
+	No_Battery = 7,
 }
 Battery_Flags :: bit_set[Battery_Flag; BYTE]
 
@@ -1205,3 +1249,31 @@ GHND                :: (GMEM_MOVEABLE | GMEM_ZEROINIT)
 GPTR                :: (GMEM_FIXED | GMEM_ZEROINIT)
 
 LPTOP_LEVEL_EXCEPTION_FILTER :: PVECTORED_EXCEPTION_HANDLER
+
+ACTCTXW :: struct {
+	Size:                  ULONG,
+	Flags:                 DWORD,
+	Source:                LPCWSTR,
+	ProcessorArchitecture: USHORT,
+	LangId:                LANGID,
+	AssemblyDirectory:     LPCWSTR,
+	ResourceName:          LPCWSTR,
+	ApplicationName:       LPCWSTR,
+	Module:                HMODULE,
+}
+PACTCTXW  :: ^ACTCTXW
+PCACTCTXW :: ^ACTCTXW
+
+ACTCTX_FLAG_PROCESSOR_ARCHITECTURE_VALID :: 0x001
+ACTCTX_FLAG_LANGID_VALID                 :: 0x002
+ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID     :: 0x004
+ACTCTX_FLAG_RESOURCE_NAME_VALID          :: 0x008
+ACTCTX_FLAG_SET_PROCESS_DEFAULT          :: 0x010
+ACTCTX_FLAG_APPLICATION_NAME_VALID       :: 0x020
+ACTCTX_FLAG_HMODULE_VALID                :: 0x080
+
+@(default_calling_convention="system")
+foreign kernel32 {
+	CreateActCtxW :: proc(pActCtx: ^ACTCTXW) -> HANDLE ---
+	ActivateActCtx :: proc(hActCtx: HANDLE, lpCookie: ^ULONG_PTR) -> BOOL ---
+}

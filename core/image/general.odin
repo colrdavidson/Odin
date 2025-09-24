@@ -10,20 +10,28 @@ Destroy_Proc :: #type proc(img: ^Image)
 _internal_loaders: [Which_File_Type]Loader_Proc
 _internal_destroyers: [Which_File_Type]Destroy_Proc
 
-register :: proc(kind: Which_File_Type, loader: Loader_Proc, destroyer: Destroy_Proc) {
-	assert(loader != nil)
-	assert(destroyer != nil)
-	assert(_internal_loaders[kind] == nil)
+register :: proc "contextless" (kind: Which_File_Type, loader: Loader_Proc, destroyer: Destroy_Proc) {
+	assert_contextless(loader != nil)
+	assert_contextless(destroyer != nil)
+	assert_contextless(_internal_loaders[kind] == nil)
 	_internal_loaders[kind] = loader
 
-	assert(_internal_destroyers[kind] == nil)
+	assert_contextless(_internal_destroyers[kind] == nil)
 	_internal_destroyers[kind] = destroyer
 }
 
 load_from_bytes :: proc(data: []byte, options := Options{}, allocator := context.allocator) -> (img: ^Image, err: Error) {
 	loader := _internal_loaders[which(data)]
 	if loader == nil {
-		return nil, .Unsupported_Format
+
+		// Check if there is at least one loader, otherwise panic to let the user know about misuse.
+		for a_loader in _internal_loaders {
+			if a_loader != nil {
+				return nil, .Unsupported_Format
+			}
+		}
+
+		panic("image.load called when no image loaders are registered. Register a loader by first importing a subpackage (eg: `import \"core:image/png\"`), or with image.register")
 	}
 	return loader(data, options, allocator)
 }
@@ -138,8 +146,8 @@ which_bytes :: proc(data: []byte) -> Which_File_Type {
 	case s[6:10] == "JFIF", s[6:10] == "Exif":
 		return .JPEG
 	case s[:3] == "\xff\xd8\xff":
-		switch s[4] {
-		case 0xdb, 0xee, 0xe1, 0xe0:
+		switch s[3] {
+		case 0xdb, 0xee, 0xe1, 0xe0, 0xfe, 0xed:
 			return .JPEG
 		}
 		switch {
@@ -185,7 +193,7 @@ which_bytes :: proc(data: []byte) -> Which_File_Type {
 		return .HDR
 	case s[:4] == "\x38\x42\x50\x53":
 		return .PSD
-	case s[:4] != "\x53\x80\xF6\x34" && s[88:92] == "PICT":
+	case s[:4] == "\x53\x80\xF6\x34" && s[88:92] == "PICT":
 		return .PIC
 	case s[:4] == "\x69\x63\x6e\x73":
 		return .ICNS

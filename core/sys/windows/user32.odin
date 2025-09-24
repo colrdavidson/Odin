@@ -1,7 +1,8 @@
-// +build windows
+#+build windows
 package sys_windows
 
 import "base:intrinsics"
+import "core:c"
 foreign import user32 "system:User32.lib"
 
 @(default_calling_convention="system")
@@ -32,6 +33,8 @@ foreign user32 {
 	RegisterClassExW :: proc(^WNDCLASSEXW) -> ATOM ---
 	UnregisterClassW :: proc(lpClassName: LPCWSTR, hInstance: HINSTANCE) -> BOOL ---
 
+	RegisterHotKey :: proc(hnwd: HWND, id: c.int, fsModifiers: UINT, vk: UINT) -> BOOL ---
+
 	CreateWindowExW :: proc(
 		dwExStyle: DWORD,
 		lpClassName: LPCWSTR,
@@ -44,6 +47,8 @@ foreign user32 {
 		lpParam: LPVOID,
 	) -> HWND ---
 
+	GetWindowThreadProcessId :: proc(hwnd: HWND, lpdwProcessId: LPDWORD) -> DWORD ---
+
 	DestroyWindow :: proc(hWnd: HWND) -> BOOL ---
 
 	ShowWindow :: proc(hWnd: HWND, nCmdShow: INT) -> BOOL ---
@@ -51,6 +56,7 @@ foreign user32 {
 	IsWindowVisible :: proc(hwnd: HWND) -> BOOL ---
 	IsWindowEnabled :: proc(hwnd: HWND) -> BOOL ---
 	IsIconic :: proc(hwnd: HWND) -> BOOL ---
+	IsZoomed :: proc(hwnd: HWND) -> BOOL ---
 	BringWindowToTop :: proc(hWnd: HWND) -> BOOL ---
 	GetTopWindow :: proc(hWnd: HWND) -> HWND ---
 	SetForegroundWindow :: proc(hWnd: HWND) -> BOOL ---
@@ -59,6 +65,8 @@ foreign user32 {
 	UpdateWindow :: proc(hWnd: HWND) -> BOOL ---
 	SetActiveWindow :: proc(hWnd: HWND) -> HWND ---
 	GetActiveWindow :: proc() -> HWND ---
+	SetFocus :: proc(hWnd: HWND) -> HWND ---
+	GetFocus :: proc() -> HWND ---
 	RedrawWindow :: proc(hwnd: HWND, lprcUpdate: LPRECT, hrgnUpdate: HRGN, flags: RedrawWindowFlags) -> BOOL ---
 	SetParent :: proc(hWndChild: HWND, hWndNewParent: HWND) -> HWND ---
 	SetPropW :: proc(hWnd: HWND, lpString: LPCWSTR, hData: HANDLE) -> BOOL ---
@@ -66,7 +74,7 @@ foreign user32 {
 	RemovePropW :: proc(hWnd: HWND, lpString: LPCWSTR) -> HANDLE ---
 	EnumPropsW :: proc(hWnd: HWND, lpEnumFunc: PROPENUMPROCW) -> INT ---
 	EnumPropsExW :: proc(hWnd: HWND, lpEnumFunc: PROPENUMPROCW, lParam: LPARAM) -> INT ---
-	GetMessageW :: proc(lpMsg: ^MSG, hWnd: HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT) -> BOOL ---
+	GetMessageW :: proc(lpMsg: ^MSG, hWnd: HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT) -> INT ---
 
 	TranslateMessage :: proc(lpMsg: ^MSG) -> BOOL ---
 	DispatchMessageW :: proc(lpMsg: ^MSG) -> LRESULT ---
@@ -142,7 +150,7 @@ foreign user32 {
 	AppendMenuW :: proc(hMenu: HMENU, uFlags: UINT, uIDNewItem: UINT_PTR, lpNewItem: LPCWSTR) -> BOOL ---
 	GetMenu :: proc(hWnd: HWND) -> HMENU ---
 	SetMenu :: proc(hWnd: HWND, hMenu: HMENU) -> BOOL ---
-	TrackPopupMenu :: proc(hMenu: HMENU, uFlags: UINT, x, y: INT, nReserved: INT, hWnd: HWND, prcRect: ^RECT) -> BOOL ---
+	TrackPopupMenu :: proc(hMenu: HMENU, uFlags: UINT, x, y: INT, nReserved: INT, hWnd: HWND, prcRect: ^RECT) -> INT ---
 	RegisterWindowMessageW :: proc(lpString: LPCWSTR) -> UINT ---
 
 	CreateAcceleratorTableW :: proc(paccel: LPACCEL, cAccel: INT) -> HACCEL ---
@@ -207,6 +215,7 @@ foreign user32 {
 	EnumDisplayMonitors :: proc(hdc: HDC, lprcClip: LPRECT, lpfnEnum: Monitor_Enum_Proc, dwData: LPARAM) -> BOOL ---
 
 	EnumWindows :: proc(lpEnumFunc: Window_Enum_Proc, lParam: LPARAM) -> BOOL ---
+	EnumChildWindows :: proc(hWndParent: HWND, lpEnumFunc: Window_Enum_Proc, lParam: LPARAM) -> BOOL ---
 
 	IsProcessDPIAware :: proc() -> BOOL ---
 	SetProcessDPIAware :: proc() -> BOOL ---
@@ -305,6 +314,13 @@ foreign user32 {
 
 	GetProcessWindowStation :: proc() -> HWINSTA ---
 	GetUserObjectInformationW :: proc(hObj: HANDLE, nIndex: GetUserObjectInformationFlags, pvInfo: PVOID, nLength: DWORD, lpnLengthNeeded: LPDWORD) -> BOOL ---
+	
+	OpenClipboard :: proc(hWndNewOwner: HWND) -> BOOL ---
+	CloseClipboard :: proc() -> BOOL ---
+	GetClipboardData :: proc(uFormat: UINT) -> HANDLE ---
+	SetClipboardData :: proc(uFormat: UINT, hMem: HANDLE) -> HANDLE ---
+	IsClipboardFormatAvailable :: proc(format: UINT) -> BOOL ---
+	EmptyClipboard :: proc() -> BOOL ---
 }
 
 CreateWindowW :: #force_inline proc "system" (
@@ -373,8 +389,9 @@ GET_XBUTTON_WPARAM :: #force_inline proc "contextless" (wParam: WPARAM) -> WORD 
 	return HIWORD(cast(DWORD)wParam)
 }
 
-GET_RAWINPUT_CODE_WPARAM :: #force_inline proc "contextless" (wParam: WPARAM) -> BYTE {
-	return BYTE(wParam) & 0xFF
+// Retrieves the input code from wParam in WM_INPUT message.
+GET_RAWINPUT_CODE_WPARAM :: #force_inline proc "contextless" (wParam: WPARAM) -> RAWINPUT_CODE {
+	return RAWINPUT_CODE(wParam & 0xFF)
 }
 
 MAKEINTRESOURCEW :: #force_inline proc "contextless" (#any_int i: int) -> LPWSTR {
@@ -397,6 +414,16 @@ DPI_AWARENESS_CONTEXT_SYSTEM_AWARE         :: DPI_AWARENESS_CONTEXT(~uintptr(1))
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE    :: DPI_AWARENESS_CONTEXT(~uintptr(2)) // -3
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 :: DPI_AWARENESS_CONTEXT(~uintptr(3)) // -4
 DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED    :: DPI_AWARENESS_CONTEXT(~uintptr(4)) // -5
+
+RAWINPUT_CODE :: enum {
+	// The input is in the regular message flow,
+	// the app is required to call DefWindowProc
+	// so that the system can perform clean ups.
+	RIM_INPUT       = 0,
+	// The input is sink only. The app is expected
+	// to behave nicely.
+	RIM_INPUTSINK   = 1,
+}
 
 RAWINPUTHEADER :: struct {
 	dwType: DWORD,
@@ -530,11 +557,11 @@ RI_KEY_TERMSRV_SHADOW :: 0x10
 MOUSE_MOVE_RELATIVE :: 0x00
 MOUSE_MOVE_ABSOLUTE :: 0x01
 MOUSE_VIRTUAL_DESKTOP :: 0x02
-MOUSE_ATTRIUBTTES_CHANGED :: 0x04
+MOUSE_ATTRIBUTES_CHANGED :: 0x04
 MOUSE_MOVE_NOCOALESCE :: 0x08
 
 RI_MOUSE_BUTTON_1_DOWN :: 0x0001
-RI_MOUSE_LEFT_BUTTON_DOWNS :: RI_MOUSE_BUTTON_1_DOWN
+RI_MOUSE_LEFT_BUTTON_DOWN :: RI_MOUSE_BUTTON_1_DOWN
 RI_MOUSE_BUTTON_1_UP :: 0x0002
 RI_MOUSE_LEFT_BUTTON_UP :: RI_MOUSE_BUTTON_1_UP
 RI_MOUSE_BUTTON_2_DOWN :: 0x0004
@@ -735,3 +762,112 @@ WinEventFlag :: enum DWORD {
 	SKIPOWNPROCESS = 1,
 	INCONTEXT      = 2,
 }
+
+// Standard Clipboard Formats
+CF_TEXT            :: 1
+CF_BITMAP          :: 2
+CF_METAFILEPICT    :: 3
+CF_SYLK            :: 4
+CF_DIF             :: 5
+CF_TIFF            :: 6
+CF_OEMTEXT         :: 7
+CF_DIB             :: 8
+CF_PALETTE         :: 9
+CF_PENDATA         :: 10
+CF_RIFF            :: 11
+CF_WAVE            :: 12
+CF_UNICODETEXT     :: 13
+CF_ENHMETAFILE     :: 14
+CF_HDROP           :: 15
+CF_LOCALE          :: 16
+CF_DIBV5           :: 17
+CF_DSPBITMAP       :: 0x0082
+CF_DSPENHMETAFILE  :: 0x008E
+CF_DSPMETAFILEPICT :: 0x0083
+CF_DSPTEXT         :: 0x0081
+CF_GDIOBJFIRST     :: 0x0300
+CF_GDIOBJLAST      :: 0x03FF
+CF_OWNERDISPLAY    :: 0x0080
+CF_PRIVATEFIRST    :: 0x0200
+CF_PRIVATELAST     :: 0x02FF
+
+STICKYKEYS :: struct {
+	cbSize: UINT,
+	dwFlags: DWORD,
+}
+LPSTICKYKEYS :: ^STICKYKEYS
+
+SKF_STICKYKEYSON    :: 0x1
+SKF_AVAILABLE       :: 0x2
+SKF_HOTKEYACTIVE    :: 0x4
+SKF_CONFIRMHOTKEY   :: 0x8
+SKF_HOTKEYSOUND     :: 0x10
+SKF_INDICATOR       :: 0x20
+SKF_AUDIBLEFEEDBACK :: 0x40
+SKF_TRISTATE        :: 0x80
+SKF_TWOKEYSOFF      :: 0x100
+SKF_LSHIFTLOCKED    :: 0x10000
+SKF_RSHIFTLOCKED    :: 0x20000
+SKF_LCTLLOCKED      :: 0x40000
+SKF_RCTLLOCKED      :: 0x80000
+SKF_LALTLOCKED      :: 0x100000
+SKF_RALTLOCKED      :: 0x200000
+SKF_LWINLOCKED      :: 0x400000
+SKF_RWINLOCKED      :: 0x800000
+SKF_LSHIFTLATCHED   :: 0x1000000
+SKF_RSHIFTLATCHED   :: 0x2000000
+SKF_LCTLLATCHED     :: 0x4000000
+SKF_RCTLLATCHED     :: 0x8000000
+SKF_LALTLATCHED     :: 0x10000000
+SKF_RALTLATCHED     :: 0x20000000
+
+TOGGLEKEYS :: struct {
+	cbSize: UINT,
+	dwFlags: DWORD,
+}
+LPTOGGLEKEYS :: ^TOGGLEKEYS
+
+TKF_TOGGLEKEYSON  :: 0x1
+TKF_AVAILABLE     :: 0x2
+TKF_HOTKEYACTIVE  :: 0x4
+TKF_CONFIRMHOTKEY :: 0x8
+TKF_HOTKEYSOUND   :: 0x10
+TKF_INDICATOR     :: 0x20
+
+FILTERKEYS :: struct {
+	cbSize:  UINT,
+	dwFlags: DWORD,
+	iWaitMSec: DWORD,
+	iDelayMSec: DWORD,
+	iRepeatMSec: DWORD,
+	iBounceMSec: DWORD,
+}
+LPFILTERKEYS :: ^FILTERKEYS
+
+FKF_FILTERKEYSON  :: 0x1
+FKF_AVAILABLE     :: 0x2
+FKF_HOTKEYACTIVE  :: 0x4
+FKF_CONFIRMHOTKEY :: 0x8
+FKF_HOTKEYSOUND   :: 0x10
+FKF_INDICATOR     :: 0x20
+FKF_CLICKON       :: 0x40
+
+NONCLIENTMETRICSW :: struct {
+	cbSize: UINT,
+	iBorderWidth: i32,
+	iScrollWidth: i32,
+	iScrollHeight: i32,
+	iCaptionWidth: i32,
+	iCaptionHeight: i32,
+	lfCaptionFont: LOGFONTW,
+	iSmCaptionWidth: i32,
+	iSmCaptionHeight: i32,
+	lfSmCaptionFont: LOGFONTW,
+	iMenuWidth: i32,
+	iMenuHeight: i32,
+	lfMenuFont: LOGFONTW,
+	lfStatusFont: LOGFONTW,
+	lfMessageFont: LOGFONTW,
+	iPaddedBorderWidth: i32,
+}
+LPNONCLIENTMETRICSW :: ^NONCLIENTMETRICSW

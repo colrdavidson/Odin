@@ -27,6 +27,8 @@ Proc_Calling_Convention :: union {
 Node_State_Flag :: enum {
 	Bounds_Check,
 	No_Bounds_Check,
+	Type_Assert,
+	No_Type_Assert,
 }
 Node_State_Flags :: distinct bit_set[Node_State_Flag]
 
@@ -67,6 +69,7 @@ File :: struct {
 	fullpath: string,
 	src:      string,
 
+	tags: [dynamic]tokenizer.Token,
 	docs: ^Comment_Group,
 
 	pkg_decl:  ^Package_Decl,
@@ -429,10 +432,13 @@ Range_Stmt :: struct {
 	reverse:   bool,
 }
 
-Inline_Range_Stmt :: struct {
+Inline_Range_Stmt :: Unroll_Range_Stmt
+
+Unroll_Range_Stmt :: struct {
 	using node: Stmt,
 	label:     ^Expr,
-	inline_pos: tokenizer.Pos,
+	unroll_pos: tokenizer.Pos,
+	args:       []^Expr,
 	for_pos:    tokenizer.Pos,
 	val0:       ^Expr,
 	val1:       ^Expr,
@@ -773,17 +779,18 @@ Dynamic_Array_Type :: struct {
 
 Struct_Type :: struct {
 	using node: Expr,
-	tok_pos:       tokenizer.Pos,
-	poly_params:   ^Field_List,
-	align:         ^Expr,
-	field_align:   ^Expr,
-	where_token:   tokenizer.Token,
-	where_clauses: []^Expr,
-	is_packed:     bool,
-	is_raw_union:  bool,
-	is_no_copy:    bool,
-	fields:        ^Field_List,
-	name_count:    int,
+	tok_pos:         tokenizer.Pos,
+	poly_params:     ^Field_List,
+	align:           ^Expr,
+	min_field_align: ^Expr,
+	max_field_align: ^Expr,
+	where_token:     tokenizer.Token,
+	where_clauses:   []^Expr,
+	is_packed:       bool,
+	is_raw_union:    bool,
+	is_no_copy:      bool,
+	fields:          ^Field_List,
+	name_count:      int,
 }
 
 Union_Type_Kind :: enum u8 {
@@ -861,6 +868,7 @@ Bit_Field_Field :: struct {
 	name:       ^Expr,
 	type:       ^Expr,
 	bit_size:   ^Expr,
+	tag:        tokenizer.Token,
 	comments:   ^Comment_Group,
 }
 

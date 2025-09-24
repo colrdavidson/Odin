@@ -1,8 +1,10 @@
-//+private
+#+private
 package os2
 
-import "core:strconv"
 import "base:runtime"
+
+import "core:strings"
+import "core:strconv"
 import "core:sys/linux"
 
 _Path_Separator        :: '/'
@@ -12,12 +14,12 @@ _Path_List_Separator   :: ':'
 _OPENDIR_FLAGS : linux.Open_Flags : {.NONBLOCK, .DIRECTORY, .LARGEFILE, .CLOEXEC}
 
 _is_path_separator :: proc(c: byte) -> bool {
-	return c == '/'
+	return c == _Path_Separator
 }
 
 _mkdir :: proc(path: string, perm: int) -> Error {
-	TEMP_ALLOCATOR_GUARD()
-	path_cstr := temp_cstring(path) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	path_cstr := clone_to_cstring(path, temp_allocator) or_return
 	return _get_platform_error(linux.mkdir(path_cstr, transmute(linux.Mode)u32(perm)))
 }
 
@@ -50,9 +52,9 @@ _mkdir_all :: proc(path: string, perm: int) -> Error {
 		}
 		return _get_platform_error(errno)
 	}
-	TEMP_ALLOCATOR_GUARD()
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
 	// need something we can edit, and use to generate cstrings
-	path_bytes := make([]u8, len(path) + 1, temp_allocator())
+	path_bytes := make([]u8, len(path) + 1, temp_allocator)
 
 	// zero terminate the byte slice to make it a valid cstring
 	copy(path_bytes, path)
@@ -75,17 +77,7 @@ _mkdir_all :: proc(path: string, perm: int) -> Error {
 	return nil if has_created else .Exist
 }
 
-dirent64 :: struct {
-	d_ino: u64,
-	d_off: u64,
-	d_reclen: u16,
-	d_type: u8,
-	d_name: [1]u8,
-}
-
 _remove_all :: proc(path: string) -> Error {
-	DT_DIR :: 4
-
 	remove_all_dir :: proc(dfd: linux.Fd) -> Error {
 		n := 64
 		buf := make([]u8, n)
@@ -105,26 +97,18 @@ _remove_all :: proc(path: string) -> Error {
 				return _get_platform_error(errno)
 			}
 
-			d: ^dirent64
+			offset: int
+			for d in linux.dirent_iterate_buf(buf[:buflen], &offset) {
+				d_name_str := linux.dirent_name(d)
+				d_name_cstr := strings.unsafe_string_to_cstring(d_name_str)
 
-			for i := 0; i < buflen; i += int(d.d_reclen) {
-				d = (^dirent64)(rawptr(&buf[i]))
-				d_name_cstr := cstring(&d.d_name[0])
-
-				buf_len := uintptr(d.d_reclen) - offset_of(d.d_name)
-
-				/* check for current directory (.) */
-				#no_bounds_check if buf_len > 1 && d.d_name[0] == '.' && d.d_name[1] == 0 {
+				/* check for current or parent directory (. or ..) */
+				if d_name_str == "." || d_name_str == ".." {
 					continue
 				}
 
-				/* check for parent directory (..) */
-				#no_bounds_check if buf_len > 2 && d.d_name[0] == '.' && d.d_name[1] == '.' && d.d_name[2] == 0 {
-					continue
-				}
-
-				switch d.d_type {
-				case DT_DIR:
+				#partial switch d.type {
+				case .DIR:
 					new_dfd: linux.Fd
 					new_dfd, errno = linux.openat(dfd, d_name_cstr, _OPENDIR_FLAGS)
 					if errno != .NONE {
@@ -145,8 +129,8 @@ _remove_all :: proc(path: string) -> Error {
 		return nil
 	}
 
-	TEMP_ALLOCATOR_GUARD()
-	path_cstr := temp_cstring(path) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+	path_cstr := clone_to_cstring(path, temp_allocator) or_return
 
 	fd, errno := linux.open(path_cstr, _OPENDIR_FLAGS)
 	#partial switch errno {
@@ -184,8 +168,29 @@ _get_working_directory :: proc(allocator: runtime.Allocator) -> (string, Error) 
 }
 
 _set_working_directory :: proc(dir: string) -> Error {
-	dir_cstr := temp_cstring(dir) or_return
+	temp_allocator := TEMP_ALLOCATOR_GUARD({})
+
+	dir_cstr := clone_to_cstring(dir, temp_allocator) or_return
 	return _get_platform_error(linux.chdir(dir_cstr))
+}
+
+_get_executable_path :: proc(allocator: runtime.Allocator) -> (path: string, err: Error) {
+	temp_allocator := TEMP_ALLOCATOR_GUARD({ allocator })
+
+	buf := make([dynamic]byte, 1024, temp_allocator) or_return
+	for {
+		n, errno := linux.readlink("/proc/self/exe", buf[:])
+		if errno != .NONE {
+			err = _get_platform_error(errno)
+			return
+		}
+
+		if n < len(buf) {
+			return clone_string(string(buf[:n]), allocator)
+		}
+
+		resize(&buf, len(buf)*2) or_return
+	}
 }
 
 _get_full_path :: proc(fd: linux.Fd, allocator: runtime.Allocator) -> (fullpath: string, err: Error) {
@@ -201,4 +206,22 @@ _get_full_path :: proc(fd: linux.Fd, allocator: runtime.Allocator) -> (fullpath:
 		fullpath = ""
 	}
 	return
+}
+
+_get_absolute_path :: proc(path: string, allocator: runtime.Allocator) -> (absolute_path: string, err: Error) {
+	rel := path
+	if rel == "" {
+		rel = "."
+	}
+
+	temp_allocator := TEMP_ALLOCATOR_GUARD({ allocator })
+
+	fd, errno := linux.open(clone_to_cstring(path, temp_allocator) or_return, {})
+	if errno != nil {
+		err = _get_platform_error(errno)
+		return
+	}
+	defer linux.close(fd)
+
+	return _get_full_path(fd, allocator)
 }

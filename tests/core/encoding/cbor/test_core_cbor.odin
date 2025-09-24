@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package test_encoding_cbor
 
 import "base:intrinsics"
@@ -42,6 +43,8 @@ Foo :: struct {
 	biggest: big.Int,
 	smallest: big.Int,
 	ignore_this: ^Foo `cbor:"-"`,
+	mat: matrix[4, 4]f32,
+	vec: #simd [4]f64,
 }
 
 FooBar :: enum {
@@ -94,6 +97,8 @@ test_marshalling :: proc(t: ^testing.T) {
 			onetwenty = i128(12345),
 			small_onetwenty = -i128(max(u64)),
 			ignore_this = &Foo{},
+			mat = 1,
+			vec = 2,
 		}
 
 		big.atoi(&f.biggest, "1234567891011121314151617181920")
@@ -117,11 +122,49 @@ test_marshalling :: proc(t: ^testing.T) {
 		diagnosis, eerr := cbor.to_diagnostic_format(decoded)
 		testing.expect_value(t, eerr, nil)
 		defer delete(diagnosis)
-
 		testing.expect_value(t, diagnosis, `{
-	"base64": 34("MTYgaXMgYSBuaWNlIG51bWJlcg=="),
-	"biggest": 2(h'f951a9fd3c158afdff08ab8e0'),
-	"biggie": 18446744073709551615,
+	"no": null,
+	"mat": [
+		1.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		1.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		1.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		0.0000,
+		1.0000
+	],
+	"neg": -69,
+	"nos": undefined,
+	"now": 1(1701117968),
+	"pos": 1212,
+	"str": "Hellope",
+	"vec": [
+		2.0000,
+		2.0000,
+		2.0000,
+		2.0000
+	],
+	"yes": true,
+	"comp": [
+		32.0000,
+		33.0000
+	],
+	"cstr": "Hellnope",
+	"quat": [
+		17.0000,
+		18.0000,
+		19.0000,
+		16.0000
+	],
 	"child": {
 		"dyn": [
 			"one",
@@ -148,41 +191,26 @@ test_marshalling :: proc(t: ^testing.T) {
 			10
 		]
 	},
-	"comp": [
-		32.0000,
-		33.0000
-	],
-	"cstr": "Hellnope",
 	"ennie": 0,
-	"ennieb": 512,
-	"iamint": -256,
-	"important": "!",
-	"my_bytes": h'',
-	"neg": -69,
-	"no": nil,
-	"nos": undefined,
-	"now": 1(1701117968),
 	"nowie": {
 		"_nsec": 1701117968000000000
 	},
-	"onetwenty": 12345,
-	"pos": 1212,
-	"quat": [
-		17.0000,
-		18.0000,
-		19.0000,
-		16.0000
-	],
-	"renamed :)": 123123.12500000,
-	"small_onetwenty": -18446744073709551615,
-	"smallest": 3(h'f951a9fd3c158afdff08ab8e0'),
-	"smallie": -18446744073709551616,
-	"str": "Hellope",
 	"value": {
 		16: "16 is a nice number",
 		32: 69
 	},
-	"yes": true
+	"base64": 34("MTYgaXMgYSBuaWNlIG51bWJlcg=="),
+	"biggie": 18446744073709551615,
+	"ennieb": 512,
+	"iamint": -256,
+	"biggest": 2(h'0f951a9fd3c158afdff08ab8e0'),
+	"smallie": -18446744073709551616,
+	"my_bytes": h'',
+	"smallest": 3(h'0f951a9fd3c158afdff08ab8e0'),
+	"important": "!",
+	"onetwenty": 12345,
+	"renamed :)": 123123.12500000,
+	"small_onetwenty": -18446744073709551615
 }`)
 
 		backf: Foo
@@ -295,7 +323,7 @@ test_marshalling_nil_maybe :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, nil)
 
 	diag := cbor.to_diagnostic_format(val)
-	testing.expect_value(t, diag, "nil")
+	testing.expect_value(t, diag, "null")
 	delete(diag)
 	
 	maybe_dest: Maybe(int)
@@ -384,6 +412,60 @@ test_lying_length_array :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_unmarshal_map_into_struct_partially :: proc(t: ^testing.T) {
+
+	// Tests that when unmarshalling into a struct that has less fields than the binary map has fields,
+	// the additional fields in the binary are skipped and the rest of the binary is correctly decoded.
+
+	Foo :: struct {
+		bar: struct {
+			hello: string,
+			world: string,
+			foo:   string `cbor:"-"`,
+		},
+		baz: int,
+	}
+
+	Foo_More :: struct {
+		bar: struct {
+			hello:   string,
+			world:   string,
+			hellope: string,
+			foo:     string,
+		},
+		baz: int,
+	}
+	more := Foo_More{
+		bar = {
+			hello   = "hello",
+			world   = "world",
+			hellope = "hellope",
+			foo     = "foo",
+		},
+		baz = 4,
+	}
+
+	more_bin, err := cbor.marshal(more)
+	testing.expect_value(t, err, nil)
+
+	less := Foo{
+		bar = {
+			hello = "hello",
+			world = "world",
+		},
+		baz = 4,
+	}
+	less_out: Foo
+	uerr := cbor.unmarshal(string(more_bin), &less_out)
+	testing.expect_value(t, uerr, nil)
+	testing.expect_value(t, less_out, less)
+
+	delete(more_bin)
+	delete(less_out.bar.hello)
+	delete(less_out.bar.world)
+}
+
+@(test)
 test_decode_unsigned :: proc(t: ^testing.T) {
 	expect_decoding(t, "\x00", "0", u8)
 	expect_decoding(t, "\x01", "1", u8)
@@ -439,7 +521,7 @@ test_encode_negative :: proc(t: ^testing.T) {
 test_decode_simples :: proc(t: ^testing.T) {
 	expect_decoding(t, "\xf4", "false", bool)
 	expect_decoding(t, "\xf5", "true", bool)
-	expect_decoding(t, "\xf6", "nil", cbor.Nil)
+	expect_decoding(t, "\xf6", "null", cbor.Nil)
 	expect_decoding(t, "\xf7", "undefined", cbor.Undefined)
 
 	expect_decoding(t, "\xf0", "simple(16)", cbor.Simple)
@@ -503,11 +585,11 @@ test_encode_floats :: proc(t: ^testing.T) {
 @(test)
 test_decode_bytes :: proc(t: ^testing.T) {
 	expect_decoding(t, "\x40", "h''", ^cbor.Bytes)
-	expect_decoding(t, "\x44\x01\x02\x03\x04", "h'1234'", ^cbor.Bytes)
+	expect_decoding(t, "\x44\x01\x02\x03\x04", "h'01020304'", ^cbor.Bytes)
 
 	// Indefinite lengths
 	
-	expect_decoding(t, "\x5f\x42\x01\x02\x43\x03\x04\x05\xff", "h'12345'", ^cbor.Bytes)
+	expect_decoding(t, "\x5f\x42\x01\x02\x43\x03\x04\x05\xff", "h'0102030405'", ^cbor.Bytes)
 }
 
 @(test)
@@ -703,10 +785,10 @@ test_encode_maps :: proc(t: ^testing.T) {
 @(test)
 test_decode_tags :: proc(t: ^testing.T) {
 	// Tag number 2 (unsigned bignumber), value bytes, max(u64) + 1.
-	expect_tag(t, "\xc2\x49\x01\x00\x00\x00\x00\x00\x00\x00\x00", cbor.TAG_UNSIGNED_BIG_NR, "2(h'100000000')")
+	expect_tag(t, "\xc2\x49\x01\x00\x00\x00\x00\x00\x00\x00\x00", cbor.TAG_UNSIGNED_BIG_NR, "2(h'010000000000000000')")
 
 	// Tag number 3 (negative bignumber), value bytes, negative max(u64) - 1.
-	expect_tag(t, "\xc3\x49\x01\x00\x00\x00\x00\x00\x00\x00\x00", cbor.TAG_NEGATIVE_BIG_NR, "3(h'100000000')")
+	expect_tag(t, "\xc3\x49\x01\x00\x00\x00\x00\x00\x00\x00\x00", cbor.TAG_NEGATIVE_BIG_NR, "3(h'010000000000000000')")
 
 	expect_tag(t, "\xc1\x1a\x51\x4b\x67\xb0", cbor.TAG_EPOCH_TIME_NR, "1(1363896240)")
 	expect_tag(t, "\xc1\xfb\x41\xd4\x52\xd9\xec\x20\x00\x00", cbor.TAG_EPOCH_TIME_NR, "1(1363896240.5000000000000000)")
@@ -723,16 +805,16 @@ test_encode_tags :: proc(t: ^testing.T) {
 // Helpers
 
 expect_decoding :: proc(t: ^testing.T, encoded: string, decoded: string, type: typeid, loc := #caller_location) {
-    res, err := cbor.decode(encoded)
+	res, err := cbor.decode(encoded)
 	defer cbor.destroy(res)
 
 	testing.expect_value(t, reflect.union_variant_typeid(res), type, loc)
-    testing.expect_value(t, err, nil, loc)
+	testing.expect_value(t, err, nil, loc)
 
 	str := cbor.to_diagnostic_format(res, padding=-1)
 	defer delete(str)
 
-    testing.expect_value(t, str, decoded, loc)
+	testing.expect_value(t, str, decoded, loc)
 }
 
 expect_tag :: proc(t: ^testing.T, encoded: string, nr: cbor.Tag_Number, value_decoded: string, loc := #caller_location) {
@@ -754,11 +836,11 @@ expect_tag :: proc(t: ^testing.T, encoded: string, nr: cbor.Tag_Number, value_de
 }
 
 expect_float :: proc(t: ^testing.T, encoded: string, expected: $T, loc := #caller_location) where intrinsics.type_is_float(T) {
-    res, err := cbor.decode(encoded)
+	res, err := cbor.decode(encoded)
 	defer cbor.destroy(res)
 
 	testing.expect_value(t, reflect.union_variant_typeid(res), typeid_of(T), loc)
-    testing.expect_value(t, err, nil, loc)
+	testing.expect_value(t, err, nil, loc)
 
 	#partial switch r in res {
 	case f16:

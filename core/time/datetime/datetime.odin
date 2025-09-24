@@ -76,7 +76,7 @@ datetime, an error is returned.
 components_to_datetime :: proc "contextless" (#any_int year, #any_int month, #any_int day, #any_int hour, #any_int minute, #any_int second: i64, #any_int nanos := i64(0)) -> (datetime: DateTime, err: Error) {
 	date := components_to_date(year, month, day)            or_return
 	time := components_to_time(hour, minute, second, nanos) or_return
-	return {date, time}, .None
+	return {date, time, nil}, .None
 }
 
 /*
@@ -88,7 +88,7 @@ object will always have the time equal to `00:00:00.000`.
 */
 ordinal_to_datetime :: proc "contextless" (ordinal: Ordinal) -> (datetime: DateTime, err: Error) {
 	d := ordinal_to_date(ordinal) or_return
-	return {Date(d), {}}, .None
+	return {Date(d), {}, nil}, .None
 }
 
 /*
@@ -98,7 +98,7 @@ This procedure takes the value of an ordinal and returns the day of week for
 that ordinal.
 */
 day_of_week :: proc "contextless" (ordinal: Ordinal) -> (day: Weekday) {
-	return Weekday((ordinal - EPOCH + 1) %% 7)
+	return Weekday(ordinal %% 7)
 }
 
 /*
@@ -349,8 +349,7 @@ the result is unspecified.
 unsafe_date_to_ordinal :: proc "contextless" (date: Date) -> (ordinal: Ordinal) {
 	year_minus_one := date.year - 1
 
-	// Day before epoch
-	ordinal = EPOCH - 1
+	ordinal = 0
 
 	// Add non-leap days
 	ordinal += 365 * year_minus_one
@@ -382,17 +381,17 @@ This procedure returns the year and the day of the year of a given ordinal.
 Of the ordinal is outside of its valid range, the result is unspecified.
 */
 unsafe_ordinal_to_year :: proc "contextless" (ordinal: Ordinal) -> (year: i64, day_ordinal: i64) {
-	// Days after epoch
-	d0   := ordinal - EPOCH
+	// Correct for leap year cycle starting at day 1.
+	d0   := ordinal - 1
 
 	// Number of 400-year cycles and remainder
-	n400, d1 := divmod(d0, 146097)
+	n400, d1 := divmod(d0, 365*400 + 100 - 3)
 
 	// Number of 100-year cycles and remainder
-	n100, d2 := divmod(d1, 36524)
+	n100, d2 := divmod(d1, 365*100 + 25 - 1)
 
 	// Number of 4-year cycles and remainder
-	n4,   d3 := divmod(d2, 1461)
+	n4,   d3 := divmod(d2, 365*4 + 1)
 
 	// Number of remaining days
 	n1,   d4 := divmod(d3, 365)

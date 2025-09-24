@@ -59,7 +59,7 @@ struct Find_Result {
 };
 
 gb_internal String mc_wstring_to_string(wchar_t const *str) {
-	return string16_to_string(mc_allocator, make_string16_c(str));
+	return string16_to_string(mc_allocator, make_string16_c(cast(u16 *)str));
 }
 
 gb_internal String16 mc_string_to_wstring(String str) {
@@ -103,7 +103,7 @@ gb_internal HANDLE mc_find_first(String wildcard, MC_Find_Data *find_data) {
  	String16 wildcard_wide = mc_string_to_wstring(wildcard);
  	defer (mc_free(wildcard_wide));
 
- 	HANDLE handle = FindFirstFileW(wildcard_wide.text, &_find_data);
+ 	HANDLE handle = FindFirstFileW(cast(wchar_t *)wildcard_wide.text, &_find_data);
  	if (handle == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
 
  	find_data->file_attributes = _find_data.dwFileAttributes;
@@ -684,8 +684,14 @@ gb_internal void find_visual_studio_paths_from_env_vars(Find_Result *result) {
 			? str_lit("lib\\x64\\")
 			: str_lit("lib\\x86\\");
 
-		result->vs_exe_path     = mc_concat(vctid, exe);
-		result->vs_library_path = mc_concat(vctid, lib);
+		if (string_ends_with(vctid, str_lit("\\"))) {
+			result->vs_exe_path     = mc_concat(vctid, exe);
+			result->vs_library_path = mc_concat(vctid, lib);
+		} else {
+			result->vs_exe_path     = mc_concat(vctid, str_lit("\\"), exe);
+			result->vs_library_path = mc_concat(vctid, str_lit("\\"), lib);
+		}
+
 		vs_found = true;
 	}
 

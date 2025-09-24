@@ -1,5 +1,10 @@
 package linux
 
+import "base:intrinsics"
+
+@(private)
+log2 :: intrinsics.constant_log2
+
 
 /*
 	Represents an error returned by most of syscalls
@@ -190,7 +195,6 @@ when ODIN_ARCH != .arm64 && ODIN_ARCH != .arm32 {
 	#assert(1 << uint(Open_Flags_Bits.NOATIME)   == 0o0_1000000)
 	#assert(1 << uint(Open_Flags_Bits.CLOEXEC)   == 0o0_2000000)
 	#assert(1 << uint(Open_Flags_Bits.PATH)      == 0o_10000000)
-
 } else {
 	Open_Flags_Bits :: enum {
 		WRONLY    = 0,
@@ -542,10 +546,40 @@ Fd_Poll_Events_Bits :: enum {
 	RDHUP  = 13,
 }
 
+Inotify_Init_Bits :: enum {
+	NONBLOCK = 11,
+	CLOEXEC  = 19,
+}
+
+Inotify_Event_Bits :: enum u32 {
+	ACCESS        = 0,
+	MODIFY        = 1,
+	ATTRIB        = 2,
+	CLOSE_WRITE   = 3,
+	CLOSE_NOWRITE = 4,
+	OPEN          = 5,
+	MOVED_FROM    = 6,
+	MOVED_TO      = 7,
+	CREATE        = 8,
+	DELETE        = 9,
+	DELETE_SELF   = 10,
+	MOVE_SELF     = 11,
+	UNMOUNT       = 13,
+	Q_OVERFLOW    = 14,
+	IGNORED       = 15,
+	ONLYDIR       = 24,
+	DONT_FOLLOW   = 25,
+	EXCL_UNLINK   = 26,
+	MASK_CREATE   = 28,
+	MASK_ADD      = 29,
+	ISDIR         = 30,
+	ONESHOT       = 31,
+}
+
 /*
 	Bits for Mem_Protection bitfield
 */
-Mem_Protection_Bits :: enum{
+Mem_Protection_Bits :: enum {
 	READ      = 0,
 	WRITE     = 1,
 	EXEC      = 2,
@@ -560,11 +594,13 @@ Mem_Protection_Bits :: enum{
 
 /*
 	Bits for Map_Flags
+
+	See `constants.odin` for `MAP_SHARED_VALIDATE` and `MAP_HUGE_16KB`, et al.
 */
 Map_Flags_Bits :: enum {
 	SHARED          = 0,
 	PRIVATE         = 1,
-	SHARED_VALIDATE = 2,
+	DROPPABLE       = 3,
 	FIXED           = 4,
 	ANONYMOUS       = 5,
 	// platform-dependent section start
@@ -984,6 +1020,20 @@ Sig_Action_Flag :: enum u32 {
 }
 
 /*
+	Translation of code in Sig_Info for when signo is SIGCHLD
+*/
+Sig_Child_Code :: enum {
+	NONE,
+	EXITED,
+	KILLED,
+	DUMPED,
+	TRAPPED,
+	STOPPED,
+	CONTINUED,
+}
+
+
+/*
 	Type of socket to create
 	- For TCP you want to use SOCK_STREAM
 	- For UDP you want to use SOCK_DGRAM
@@ -1286,6 +1336,7 @@ Socket_Option :: enum {
 	ACCEPTCONN                    = 30,
 	PEERSEC                       = 31,
 	PASSSEC                       = 34,
+	IP_ADD_MEMBERSHIP             = 35,
 	MARK                          = 36,
 	PROTOCOL                      = 38,
 	DOMAIN                        = 39,
@@ -1329,13 +1380,15 @@ Socket_Option :: enum {
 	RESERVE_MEM                   = 73,
 	TXREHASH                      = 74,
 	RCVMARK                       = 75,
-	// Hardcoded 64-bit Time. It's time to move on.
-	TIMESTAMP                     = TIMESTAMP_NEW,
-	TIMESTAMPNS                   = TIMESTAMPNS_NEW,
-	TIMESTAMPING                  = TIMESTAMPING_NEW,
-	RCVTIMEO                      = RCVTIMEO_NEW,
-	SNDTIMEO                      = SNDTIMEO_NEW,
+	TIMESTAMP                     = TIMESTAMP_OLD    when _SOCKET_OPTION_OLD else TIMESTAMP_NEW,
+	TIMESTAMPNS                   = TIMESTAMPNS_OLD  when _SOCKET_OPTION_OLD else TIMESTAMPNS_NEW,
+	TIMESTAMPING                  = TIMESTAMPING_OLD when _SOCKET_OPTION_OLD else TIMESTAMPING_NEW,
+	RCVTIMEO                      = RCVTIMEO_OLD     when _SOCKET_OPTION_OLD else RCVTIMEO_NEW,
+	SNDTIMEO                      = SNDTIMEO_OLD     when _SOCKET_OPTION_OLD else SNDTIMEO_NEW,
 }
+
+@(private)
+_SOCKET_OPTION_OLD :: size_of(rawptr) == 8 /* || size_of(time_t) == size_of(__kernel_long_t) */
 
 Socket_UDP_Option :: enum {
 	CORK                   = 1,
@@ -1565,36 +1618,39 @@ PER_HPUX        :: 0x0010
 PER_MASK        :: 0x00ff
 
 /*
-	Bits for access modes for shared memory
+	Bits for SystemV IPC flags.
+
+	In this enum, access modes are common for any shared memory. Prefixed
+	entries (i.e. `IPC_` or `SHM_`) denote flags, where `IPC_` are common flags
+	for all SystemV IPC primitives, and `SHM_`, `SEM_` and `MSG_` are specific
+	to shared memory segments, semaphores and message queues respectively.
+	
+	These bits overlap, because they are meant to be used within the
+	context of specific procedures. Creation flags, used for `*get` procedures,
+	and usage flags used by all other IPC procedures. Do not mix creation and
+	usage flags, as well as flags prefixed differently (excluding `IPC_`
+	prefix).
 */
-IPC_Mode_Bits :: enum {
+IPC_Flags_Bits :: enum {
+	// Access modes for shared memory.
 	WROTH  = 1,
 	RDOTH  = 2,
 	WRGRP  = 4,
 	RDGRP  = 5,
 	WRUSR  = 7,
 	RDUSR  = 8,
-	DEST   = 9,
-	LOCKED = 10,
-}
-
-/*
-	Shared memory flags bits
-*/
-IPC_Flags_Bits :: enum {
+	// Creation flags for shared memory.
 	IPC_CREAT     = 9,
 	IPC_EXCL      = 10,
-	IPC_NOWAIT    = 11,
-	// Semaphore
-	SEM_UNDO      = 9,
-	// Shared memory
 	SHM_HUGETLB   = 11,
 	SHM_NORESERVE = 12,
+	// Usage flags for shared memory.
+	IPC_NOWAIT    = 11,
+	SEM_UNDO      = 9,
 	SHM_RDONLY    = 12,
 	SHM_RND       = 13,
 	SHM_REMAP     = 14,
 	SHM_EXEC      = 15,
-	// Message queue
 	MSG_NOERROR   = 12,
 	MSG_EXCEPT    = 13,
 	MSG_COPY      = 14,
@@ -1782,7 +1838,7 @@ Clock_Id :: enum {
 	Bits for POSIX interval timer flags.
 */
 ITimer_Flags_Bits :: enum {
-	ABSTIME = 1,
+	ABSTIME = 0,
 }
 
 /*
@@ -1793,22 +1849,23 @@ EPoll_Flags_Bits :: enum {
 }
 
 EPoll_Event_Kind :: enum u32 {
-	IN        = 0x001,
-	PRI       = 0x002,
-	OUT       = 0x004,
-	RDNORM    = 0x040,
-	RDBAND    = 0x080,
-	WRNORM    = 0x100,
-	WRBAND    = 0x200,
-	MSG       = 0x400,
-	ERR       = 0x008,
-	HUP       = 0x010,
-	RDHUP     = 0x2000,
-	EXCLUSIVE = 1<<28,
-	WAKEUP    = 1<<29,
-	ONESHOT   = 1<<30,
-	ET        = 1<<31,
+	IN        = log2(0x001),
+	PRI       = log2(0x002),
+	OUT       = log2(0x004),
+	RDNORM    = log2(0x040),
+	RDBAND    = log2(0x080),
+	WRNORM    = log2(0x100),
+	WRBAND    = log2(0x200),
+	MSG       = log2(0x400),
+	ERR       = log2(0x008),
+	HUP       = log2(0x010),
+	RDHUP     = log2(0x2000),
+	EXCLUSIVE = log2(1<<28),
+	WAKEUP    = log2(1<<29),
+	ONESHOT   = log2(1<<30),
+	ET        = log2(1<<31),
 }
+EPoll_Event_Set :: bit_set[EPoll_Event_Kind; u32]
 
 EPoll_Ctl_Opcode :: enum i32 {
 	ADD = 1,
@@ -1823,3 +1880,87 @@ Execveat_Flags_Bits :: enum {
 	AT_SYMLINK_NOFOLLOW = 8,
 	AT_EMPTY_PATH       = 12,
 }
+
+RISCV_HWProbe_Key :: enum i64 {
+	UNSUPPORTED            = -1,
+	MVENDORID              = 0,
+	MARCHID                = 1,
+	MIMPID                 = 2,
+	BASE_BEHAVIOR          = 3,
+	IMA_EXT_0              = 4,
+ 	// Deprecated, try `.MISALIGNED_SCALAR_PERF` first, if that is `.UNSUPPORTED`, use this.
+	CPUPERF_0              = 5,
+	ZICBOZ_BLOCK_SIZE      = 6,
+	HIGHEST_VIRT_ADDRESS   = 7,
+	TIME_CSR_FREQ          = 8,
+	MISALIGNED_SCALAR_PERF = 9,
+}
+
+RISCV_HWProbe_Flags_Bits :: enum {
+	WHICH_CPUS,
+}
+
+RISCV_HWProbe_Base_Behavior_Bits :: enum {
+	IMA,
+}
+
+RISCV_HWProbe_IMA_Ext_0_Bits :: enum {
+	FD,
+	C,
+	V,
+	EXT_ZBA,
+	EXT_ZBB,
+	EXT_ZBS,
+	EXT_ZICBOZ,
+	EXT_ZBC,
+	EXT_ZBKB,
+	EXT_ZBKC,
+	EXT_ZBKX,
+	EXT_ZKND,
+	EXT_ZKNE,
+	EXT_ZKNH,
+	EXT_ZKSED,
+	EXT_ZKSH,
+	EXT_ZKT,
+	EXT_ZVBB,
+	EXT_ZVBC,
+	EXT_ZVKB,
+	EXT_ZVKG,
+	EXT_ZVKNED,
+	EXT_ZVKNHA,
+	EXT_ZVKNHB,
+	EXT_ZVKSED,
+	EXT_ZVKSH,
+	EXT_ZVKT,
+	EXT_ZFH,
+	EXT_ZFHMIN,
+	EXT_ZIHINTNTL,
+	EXT_ZVFH,
+	EXT_ZVFHMIN,
+	EXT_ZFA,
+	EXT_ZTSO,
+	EXT_ZACAS,
+	EXT_ZICOND,
+	EXT_ZIHINTPAUSE,
+	EXT_ZVE32X,
+	EXT_ZVE32F,
+	EXT_ZVE64X,
+	EXT_ZVE64F,
+	EXT_ZVE64D,
+	EXT_ZIMOP,
+	EXT_ZCA,
+	EXT_ZCB,
+	EXT_ZCD,
+	EXT_ZCF,
+	EXT_ZCMOP,
+	EXT_ZAWRS,
+}
+
+RISCV_HWProbe_Misaligned_Scalar_Perf :: enum {
+	UNKNOWN,
+	EMULATED,
+	SLOW,
+	FAST,
+	UNSUPPORTED,
+}
+

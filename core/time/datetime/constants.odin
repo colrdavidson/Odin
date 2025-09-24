@@ -5,12 +5,10 @@ Type representing a mononotic day number corresponding to a date.
 
 	Ordinal 1 = Midnight Monday, January 1, 1 A.D. (Gregorian)
 	        |   Midnight Monday, January 3, 1 A.D. (Julian)
+
+Every other ordinal counts days forwards, starting from the above date.
 */
 Ordinal :: i64
-
-/*
-*/
-EPOCH   :: Ordinal(1)
 
 /*
 Minimum valid value for date.
@@ -77,12 +75,55 @@ Time :: struct {
 	nano:   i32,
 }
 
+TZ_Record :: struct {
+	time:       i64,
+	utc_offset: i64,
+	shortname:  string,
+	dst:        bool,
+}
+
+TZ_Date_Kind :: enum {
+	No_Leap,
+	Leap,
+	Month_Week_Day,
+}
+
+TZ_Transition_Date :: struct {
+	type: TZ_Date_Kind,
+
+	month:  u8,
+	week:   u8,
+	day:    u16,
+
+	time:   i64,
+}
+
+TZ_RRule :: struct {
+	has_dst:    bool,
+
+	std_name:   string,
+	std_offset: i64,
+	std_date:   TZ_Transition_Date,
+
+	dst_name:   string,
+	dst_offset: i64,
+	dst_date:   TZ_Transition_Date,
+}
+
+TZ_Region :: struct {
+	name:       string,
+	records:    []TZ_Record,
+	shortnames: []string,
+	rrule:      TZ_RRule,
+}
+
 /*
 A type representing datetime.
 */
 DateTime :: struct {
 	using date: Date,
 	using time: Time,
+	tz:   ^TZ_Region,
 }
 
 /*

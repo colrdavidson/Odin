@@ -5,6 +5,7 @@ LIB :: (
 	     "lib/cgltf.lib"      when ODIN_OS == .Windows
 	else "lib/cgltf.a"        when ODIN_OS == .Linux
 	else "lib/darwin/cgltf.a" when ODIN_OS == .Darwin
+	else "lib/cgltf_wasm.o"   when ODIN_ARCH == .wasm32 || ODIN_ARCH == .wasm64p32
 	else ""
 )
 
@@ -13,7 +14,11 @@ when LIB != "" {
 		// Windows library is shipped with the compiler, so a Windows specific message should not be needed.
 		#panic("Could not find the compiled cgltf library, it can be compiled by running `make -C \"" + ODIN_ROOT + "vendor/cgltf/src\"`")
 	}
+}
 
+when ODIN_ARCH == .wasm32 || ODIN_ARCH == .wasm64p32 {
+	foreign import lib "lib/cgltf_wasm.o"
+} else when LIB != "" {
 	foreign import lib { LIB }
 } else {
 	foreign import lib "system:cgltf"
@@ -100,6 +105,7 @@ type :: enum c.int {
 }
 
 primitive_type :: enum c.int {
+	invalid,
 	points,
 	lines,
 	line_loop,
@@ -168,7 +174,7 @@ buffer :: struct {
 	data_free_method: data_free_method,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 meshopt_compression_mode :: enum c.int {
@@ -207,7 +213,7 @@ buffer_view :: struct {
 	meshopt_compression:     meshopt_compression,
 	extras:                  extras_t,
 	extensions_count:        uint,
-	extensions:              [^]extension,
+	extensions:              [^]extension `fmt:"v,extensions_count"`,
 }
 
 accessor_sparse :: struct {
@@ -217,15 +223,6 @@ accessor_sparse :: struct {
 	indices_component_type:   component_type,
 	values_buffer_view:       ^buffer_view,
 	values_byte_offset:       uint,
-	extras:                   extras_t,
-	indices_extras:           extras_t,
-	values_extras:            extras_t,
-	extensions_count:         uint,
-	extensions:               [^]extension,
-	indices_extensions_count: uint,
-	indices_extensions:       [^]extension,
-	values_extensions_count:  uint,
-	values_extensions:        [^]extension,
 }
 
 accessor :: struct {
@@ -245,7 +242,7 @@ accessor :: struct {
 	sparse:           accessor_sparse,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 attribute :: struct {
@@ -262,18 +259,34 @@ image :: struct {
 	mime_type:        cstring,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
+}
+
+filter_type :: enum c.int {
+	undefined              = 0,
+	nearest                = 9728,
+	linear                 = 9729,
+	nearest_mipmap_nearest = 9984,
+	linear_mipmap_nearest  = 9985,
+	nearest_mipmap_linear  = 9986,
+	linear_mipmap_linear   = 9987,
+}
+
+wrap_mode :: enum c.int {
+	clamp_to_edge   = 33071,
+	mirrored_repeat = 33648,
+	repeat          = 10497,
 }
 
 sampler :: struct {
 	name:             cstring,
-	mag_filter:       c.int,
-	min_filter:       c.int,
-	wrap_s:           c.int,
-	wrap_t:           c.int,
+	mag_filter:       filter_type,
+	min_filter:       filter_type,
+	wrap_s:           wrap_mode,
+	wrap_t:           wrap_mode,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 texture :: struct {
@@ -284,7 +297,7 @@ texture :: struct {
 	basisu_image:     ^image,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 texture_transform :: struct {
@@ -301,9 +314,6 @@ texture_view :: struct {
 	scale:            f32, /* equivalent to strength for occlusion_texture */
 	has_transform:    b32,
 	transform:        texture_transform,
-	extras:           extras_t,
-	extensions_count: uint,
-	extensions:       [^]extension,
 }
 
 pbr_metallic_roughness :: struct {
@@ -376,6 +386,16 @@ iridescence :: struct {
 	iridescence_thickness_texture: texture_view,
 }
 
+anisotropy :: struct {
+	anisotropy_strength: f32,
+	anisotropy_rotation: f32,
+	anisotropy_texture:  texture_view,
+}
+
+dispersion :: struct {
+	dispersion: f32,
+}
+
 material :: struct {
 	name: cstring,
 	has_pbr_metallic_roughness:  b32,
@@ -388,6 +408,8 @@ material :: struct {
 	has_sheen:                   b32,
 	has_emissive_strength:       b32,
 	has_iridescence:             b32,
+	has_anisotropy:              b32,
+	has_dispersion:              b32,
 	pbr_metallic_roughness:      pbr_metallic_roughness,
 	pbr_specular_glossiness:     pbr_specular_glossiness,
 	clearcoat:                   clearcoat,
@@ -398,6 +420,8 @@ material :: struct {
 	volume:                      volume,
 	emissive_strength:           emissive_strength,
 	iridescence:                 iridescence,
+	anisotropy:                  anisotropy,
+	dispersion:                  dispersion,
 	normal_texture:              texture_view,
 	occlusion_texture:           texture_view,
 	emissive_texture:            texture_view,
@@ -408,7 +432,7 @@ material :: struct {
 	unlit:                       b32,
 	extras:                      extras_t,
 	extensions_count:            uint,
-	extensions:                  [^]extension,
+	extensions:                  [^]extension `fmt:"v,extensions_count"`,
 }
 
 material_mapping :: struct {
@@ -427,7 +451,6 @@ draco_mesh_compression :: struct {
 }
 
 mesh_gpu_instancing :: struct {
-	buffer_view: ^buffer_view,
 	attributes:  []attribute,
 }
 
@@ -442,7 +465,7 @@ primitive :: struct {
 	draco_mesh_compression:     draco_mesh_compression,
 	mappings:                   []material_mapping,
 	extensions_count:           uint,
-	extensions:                 [^]extension,
+	extensions:                 [^]extension `fmt:"v,extensions_count"`,
 }
 
 mesh :: struct {
@@ -452,7 +475,7 @@ mesh :: struct {
 	target_names:       []cstring,
 	extras:             extras_t,
 	extensions_count:   uint,
-	extensions:         [^]extension,
+	extensions:         [^]extension `fmt:"v,extensions_count"`,
 }
 
 skin :: struct {
@@ -462,7 +485,7 @@ skin :: struct {
 	inverse_bind_matrices: ^accessor,
 	extras:                extras_t,
 	extensions_count:      uint,
-	extensions:            [^]extension,
+	extensions:            [^]extension `fmt:"v,extensions_count"`,
 }
 
 camera_perspective :: struct {
@@ -492,7 +515,7 @@ camera :: struct {
 	},
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 light :: struct {
@@ -527,7 +550,7 @@ node :: struct {
 	has_mesh_gpu_instancing: b32,
 	mesh_gpu_instancing:     mesh_gpu_instancing,
 	extensions_count:        uint,
-	extensions:              [^]extension,
+	extensions:              [^]extension `fmt:"v,extensions_count"`,
 }
 
 scene :: struct {
@@ -535,7 +558,7 @@ scene :: struct {
 	nodes:            []^node,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 animation_sampler :: struct {
@@ -544,7 +567,7 @@ animation_sampler :: struct {
 	interpolation:    interpolation_type,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 animation_channel :: struct {
@@ -553,7 +576,7 @@ animation_channel :: struct {
 	target_path:      animation_path_type,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 animation :: struct {
@@ -562,7 +585,7 @@ animation :: struct {
 	channels:         []animation_channel,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 material_variant :: struct {
@@ -577,7 +600,7 @@ asset :: struct {
 	min_version:      cstring,
 	extras:           extras_t,
 	extensions_count: uint,
-	extensions:       [^]extension,
+	extensions:       [^]extension `fmt:"v,extensions_count"`,
 }
 
 data :: struct {
@@ -609,7 +632,7 @@ data :: struct {
 	extras: extras_t,
 
 	data_extensions_count: uint,
-	data_extensions:       [^]extension,
+	data_extensions:       [^]extension `fmt:"v,extensions_count"`,
 
 	extensions_used:     []cstring,
 	extensions_required: []cstring,
@@ -679,6 +702,9 @@ foreign lib {
 	node_transform_world :: proc(node: ^node, out_matrix: [^]f32) ---
 
 	@(require_results)
+	buffer_view_data :: proc(view: ^/*const*/buffer_view) -> [^]byte ---
+
+	@(require_results)
 	accessor_read_float :: proc(accessor: ^/*const*/accessor, index: uint, out: [^]f32,    element_size: uint) -> b32 ---
 	@(require_results)
 	accessor_read_uint  :: proc(accessor: ^/*const*/accessor, index: uint, out: [^]c.uint, element_size: uint) -> b32 ---
@@ -689,12 +715,52 @@ foreign lib {
 	num_components :: proc(type: type) -> uint ---
 
 	@(require_results)
+	component_size :: proc(component_type: component_type) -> uint ---
+	@(require_results)
+	calc_size :: proc(type: type, component_type: component_type) -> uint ---
+
+	@(require_results)
 	accessor_unpack_floats :: proc(accessor: ^/*const*/accessor, out: [^]f32, float_count: uint) -> uint ---
+	@(require_results)
+	accessor_unpack_indices :: proc(accessor: ^/*const*/accessor , out: rawptr, out_component_size: uint, index_count: uint) -> uint ---
 
 	/* this function is deprecated and will be removed in the future; use cgltf_extras::data instead */
 	@(require_results)
 	copy_extras_json :: proc(data: ^data, extras: ^extras_t, dest: [^]byte, dest_size: ^uint) -> result ---
 
+	@(require_results)
+	mesh_index        :: proc(data: ^/*const*/data, object: ^/*const*/mesh) -> uint ---
+	@(require_results)
+	material_index    :: proc(data: ^/*const*/data, object: ^/*const*/material) -> uint ---
+	@(require_results)
+	accessor_index    :: proc(data: ^/*const*/data, object: ^/*const*/accessor) -> uint ---
+	@(require_results)
+	buffer_view_index :: proc(data: ^/*const*/data, object: ^/*const*/buffer_view) -> uint ---
+	@(require_results)
+	buffer_index      :: proc(data: ^/*const*/data, object: ^/*const*/buffer) -> uint ---
+	@(require_results)
+	image_index       :: proc(data: ^/*const*/data, object: ^/*const*/image) -> uint ---
+	@(require_results)
+	texture_index     :: proc(data: ^/*const*/data, object: ^/*const*/texture) -> uint ---
+	@(require_results)
+	sampler_index     :: proc(data: ^/*const*/data, object: ^/*const*/sampler) -> uint ---
+	@(require_results)
+	skin_index        :: proc(data: ^/*const*/data, object: ^/*const*/skin) -> uint ---
+	@(require_results)
+	camera_index      :: proc(data: ^/*const*/data, object: ^/*const*/camera) -> uint ---
+	@(require_results)
+	light_index       :: proc(data: ^/*const*/data, object: ^/*const*/light) -> uint ---
+	@(require_results)
+	node_index        :: proc(data: ^/*const*/data, object: ^/*const*/node) -> uint ---
+	@(require_results)
+	scene_index       :: proc(data: ^/*const*/data, object: ^/*const*/scene) -> uint ---
+	@(require_results)
+	animation_index   :: proc(data: ^/*const*/data, object: ^/*const*/animation) -> uint ---
+	@(require_results)
+	animation_sampler_index :: proc(animation: ^/*const*/animation, object: ^/*const*/animation_sampler) -> uint ---
+	@(require_results)
+	animation_channel_index :: proc(animation: ^/*const*/animation, object: ^/*const*/animation_channel) -> uint ---
+	
 	@(require_results)
 	write_file :: proc(#by_ptr options: options, path:   cstring,             data: ^data) -> result ---
 	@(require_results)

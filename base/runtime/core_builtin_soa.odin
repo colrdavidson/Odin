@@ -76,7 +76,7 @@ raw_soa_footer :: proc{
 
 
 @(builtin, require_results)
-make_soa_aligned :: proc($T: typeid/#soa[]$E, length: int, alignment: int, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
+make_soa_aligned :: proc($T: typeid/#soa[]$E, #any_int length, alignment: int, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
 	if length <= 0 {
 		return
 	}
@@ -135,13 +135,14 @@ make_soa_aligned :: proc($T: typeid/#soa[]$E, length: int, alignment: int, alloc
 }
 
 @(builtin, require_results)
-make_soa_slice :: proc($T: typeid/#soa[]$E, length: int, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
+make_soa_slice :: proc($T: typeid/#soa[]$E, #any_int length: int, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
 	return make_soa_aligned(T, length, align_of(E), allocator, loc)
 }
 
 @(builtin, require_results)
 make_soa_dynamic_array :: proc($T: typeid/#soa[dynamic]$E, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
 	context.allocator = allocator
+	array.allocator = allocator
 	reserve_soa(&array, 0, loc) or_return
 	return array, nil
 }
@@ -149,6 +150,7 @@ make_soa_dynamic_array :: proc($T: typeid/#soa[dynamic]$E, allocator := context.
 @(builtin, require_results)
 make_soa_dynamic_array_len :: proc($T: typeid/#soa[dynamic]$E, #any_int length: int, allocator := context.allocator, loc := #caller_location) -> (array: T, err: Allocator_Error) #optional_allocator_error {
 	context.allocator = allocator
+	array.allocator = allocator
 	resize_soa(&array, length, loc) or_return
 	return array, nil
 }
@@ -172,18 +174,41 @@ make_soa :: proc{
 
 
 @builtin
-resize_soa :: proc(array: ^$T/#soa[dynamic]$E, length: int, loc := #caller_location) -> Allocator_Error {
+resize_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int length: int, loc := #caller_location) -> Allocator_Error {
 	if array == nil {
 		return nil
 	}
-	reserve_soa(array, length, loc) or_return
+
 	footer := raw_soa_footer(array)
+
+	if length > footer.cap {
+		reserve_soa(array, length, loc) or_return
+	} else if size_of(E) > 0 && length > footer.len {
+		ti := type_info_base(type_info_of(typeid_of(T)))
+		si := &ti.variant.(Type_Info_Struct)
+
+		field_count := len(E) when intrinsics.type_is_array(E) else intrinsics.type_struct_field_count(E)
+
+		data := (^rawptr)(array)^
+
+		soa_offset := 0
+		for i in 0..<field_count {
+			type := si.types[i].variant.(Type_Info_Multi_Pointer).elem
+
+			soa_offset = align_forward_int(soa_offset, align_of(E))
+
+			mem_zero(rawptr(uintptr(data) + uintptr(soa_offset) + uintptr(type.size * footer.len)), type.size * (length - footer.len))
+
+			soa_offset += type.size * footer.cap
+		}
+	}
+
 	footer.len = length
 	return nil
 }
 
 @builtin
-non_zero_resize_soa :: proc(array: ^$T/#soa[dynamic]$E, length: int, loc := #caller_location) -> Allocator_Error {
+non_zero_resize_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int length: int, loc := #caller_location) -> Allocator_Error {
 	if array == nil {
 		return nil
 	}
@@ -194,12 +219,12 @@ non_zero_resize_soa :: proc(array: ^$T/#soa[dynamic]$E, length: int, loc := #cal
 }
 
 @builtin
-reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, capacity: int, loc := #caller_location) -> Allocator_Error {
+reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int capacity: int, loc := #caller_location) -> Allocator_Error {
 	return _reserve_soa(array, capacity, true, loc)
 }
 
 @builtin
-non_zero_reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, capacity: int, loc := #caller_location) -> Allocator_Error {
+non_zero_reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int capacity: int, loc := #caller_location) -> Allocator_Error {
 	return _reserve_soa(array, capacity, false, loc)
 }
 
@@ -247,17 +272,77 @@ _reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, capacity: int, zero_memory: boo
 
 	old_data := (^rawptr)(array)^
 
+	resize: if old_data != nil {
+
+		new_bytes, resize_err := array.allocator.procedure(
+			array.allocator.data, .Resize_Non_Zeroed, new_size, max_align,
+			old_data, old_size, loc,
+		)
+		new_data := raw_data(new_bytes)
+
+		#partial switch resize_err {
+		case .Mode_Not_Implemented: break resize
+		case .None: // continue resizing
+		case: return resize_err
+		}
+
+		footer.cap = capacity
+
+		old_offset := 0
+		new_offset := 0
+
+		// Correct data memory
+		// from: |x x y y z z _ _ _|
+		// to:   |x x _ y y _ z z _|
+
+		// move old data to the end of the new allocation to avoid overlap
+		old_data = rawptr(uintptr(new_data) + uintptr(new_size - old_size))
+		mem_copy(old_data, new_data, old_size)
+
+		// now:  |_ _ _ x x y y z z|
+
+		for i in 0..<field_count {
+			type := si.types[i].variant.(Type_Info_Multi_Pointer).elem
+
+			old_offset = align_forward_int(old_offset, max_align)
+			new_offset = align_forward_int(new_offset, max_align)
+
+			new_data_elem := rawptr(uintptr(new_data) + uintptr(new_offset))
+			old_data_elem := rawptr(uintptr(old_data) + uintptr(old_offset))
+
+			old_size_elem := type.size * old_cap
+			new_size_elem := type.size * capacity
+
+			mem_copy(new_data_elem, old_data_elem, old_size_elem)
+
+			(^rawptr)(uintptr(array) + i*size_of(rawptr))^ = new_data_elem
+
+			if zero_memory {
+				mem_zero(rawptr(uintptr(new_data_elem) + uintptr(old_size_elem)), new_size_elem - old_size_elem)
+			}
+
+			old_offset += old_size_elem
+			new_offset += new_size_elem
+		}
+
+		return nil
+	}
+
 	new_bytes := array.allocator.procedure(
 		array.allocator.data, .Alloc if zero_memory else .Alloc_Non_Zeroed, new_size, max_align,
 		nil, old_size, loc,
 	) or_return
 	new_data := raw_data(new_bytes)
 
-
 	footer.cap = capacity
 
 	old_offset := 0
 	new_offset := 0
+
+	// Correct data memory
+	// from: |x x y y z z| ... |_ _ _ _ _ _ _ _ _|
+	// to:                     |x x _ y y _ z z _|
+
 	for i in 0..<field_count {
 		type := si.types[i].variant.(Type_Info_Multi_Pointer).elem
 
@@ -275,10 +360,12 @@ _reserve_soa :: proc(array: ^$T/#soa[dynamic]$E, capacity: int, zero_memory: boo
 		new_offset += type.size * capacity
 	}
 
-	array.allocator.procedure(
-		array.allocator.data, .Free, 0, max_align,
-		old_data, old_size, loc,
-	) or_return
+	if old_data != nil {
+		array.allocator.procedure(
+			array.allocator.data, .Free, 0, max_align,
+			old_data, old_size, loc,
+		) or_return
+	}
 
 	return nil
 }
@@ -484,7 +571,7 @@ into_dynamic_soa :: proc(array: $T/#soa[]$E) -> #soa[dynamic]E {
 // Note: If you the elements to remain in their order, use `ordered_remove_soa`.
 // Note: If the index is out of bounds, this procedure will panic.
 @builtin
-unordered_remove_soa :: proc(array: ^$T/#soa[dynamic]$E, index: int, loc := #caller_location) #no_bounds_check {
+unordered_remove_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int index: int, loc := #caller_location) #no_bounds_check {
 	bounds_check_error_loc(loc, index, len(array))
 	if index+1 < len(array) {
 		ti := type_info_of(typeid_of(T))
@@ -512,7 +599,7 @@ unordered_remove_soa :: proc(array: ^$T/#soa[dynamic]$E, index: int, loc := #cal
 // Note: If you the elements do not have to remain in their order, prefer `unordered_remove_soa`.
 // Note: If the index is out of bounds, this procedure will panic.
 @builtin
-ordered_remove_soa :: proc(array: ^$T/#soa[dynamic]$E, index: int, loc := #caller_location) #no_bounds_check {
+ordered_remove_soa :: proc(array: ^$T/#soa[dynamic]$E, #any_int index: int, loc := #caller_location) #no_bounds_check {
 	bounds_check_error_loc(loc, index, len(array))
 	if index+1 < len(array) {
 		ti := type_info_of(typeid_of(T))

@@ -19,16 +19,6 @@ X_OK  :: c.int((1 << 0))  /* test for execute or search permission */
 W_OK  :: c.int((1 << 1))  /* test for write permission */
 R_OK  :: c.int((1 << 2))  /* test for read permission */
 
-/* copyfile flags */
-COPYFILE_ACL   :: (1 << 0)
-COPYFILE_STAT  :: (1 << 1)
-COPYFILE_XATTR :: (1 << 2)
-COPYFILE_DATA  :: (1 << 3)
-
-COPYFILE_SECURITY :: (COPYFILE_STAT | COPYFILE_ACL)
-COPYFILE_METADATA :: (COPYFILE_SECURITY | COPYFILE_XATTR)
-COPYFILE_ALL	  :: (COPYFILE_METADATA | COPYFILE_DATA)
-
 /* syslimits.h */
 PATH_MAX	:: 1024	/* max bytes in pathname */
 
@@ -192,44 +182,49 @@ _STRUCT_TIMEVAL :: struct {
 
 /* pwd.h */
 _Password_Entry :: struct {
-    pw_name: cstring, /* username */
-    pw_passwd: cstring, /* user password */
-    pw_uid: i32,   /* user ID */
-    pw_gid: i32,   /* group ID */
+	pw_name: cstring, /* username */
+	pw_passwd: cstring, /* user password */
+	pw_uid: i32,   /* user ID */
+	pw_gid: i32,   /* group ID */
 	pw_change: u64,     /* password change time */
 	pw_class: cstring, /* user access class */
-    pw_gecos: cstring, /* full user name */
-    pw_dir: cstring, /* home directory */
-    pw_shell: cstring, /* shell program */
+	pw_gecos: cstring, /* full user name */
+	pw_dir: cstring, /* home directory */
+	pw_shell: cstring, /* shell program */
 	pw_expire: u64,     /* account expiration */
 	pw_fields: i32,     /* filled fields */
 }
 
 /* processinfo.h */
 _Proc_Bsdinfo :: struct {
-  pbi_flags: u32, /* if is 64bit; emulated etc */
-  pbi_status: u32,
-  pbi_xstatus: u32,
-  pbi_pid: u32,
-  pbi_ppid: u32,
-  pbi_uid: u32,
-  pbi_gid: u32,
-  pbi_ruid: u32,
-  pbi_rgid: u32,
-  pbi_svuid: u32,
-  pbi_svgid: u32,
-  res: u32,
-  pbi_comm: [DARWIN_MAXCOMLEN]u8,
-  pbi_name: [2 * DARWIN_MAXCOMLEN]u8,	/* empty if no name is registered */
-  pbi_nfiles: u32,
-  pbi_pgid: u32,
-  pbi_pjobc: u32,
-  e_tdev: u32, /* controlling tty dev */
-  e_tpgid: u32,	/* tty process group id */
-  pbi_nice: i32,
-  pbi_start_tvsec: u64,
-  pbi_start_tvusec: u64,
+	pbi_flags: u32, /* if is 64bit; emulated etc */
+	pbi_status: u32,
+	pbi_xstatus: u32,
+	pbi_pid: u32,
+	pbi_ppid: u32,
+	pbi_uid: u32,
+	pbi_gid: u32,
+	pbi_ruid: u32,
+	pbi_rgid: u32,
+	pbi_svuid: u32,
+	pbi_svgid: u32,
+	res: u32,
+	pbi_comm: [DARWIN_MAXCOMLEN]u8,
+	pbi_name: [2 * DARWIN_MAXCOMLEN]u8,	/* empty if no name is registered */
+	pbi_nfiles: u32,
+	pbi_pgid: u32,
+	pbi_pjobc: u32,
+	e_tdev: u32, /* controlling tty dev */
+	e_tpgid: u32,	/* tty process group id */
+	pbi_nice: i32,
+	pbi_start_tvsec: u64,
+	pbi_start_tvusec: u64,
 }
+
+/*--==========================================================================--*/
+
+/* Get window size */
+TIOCGWINSZ :: 0x40087468
 
 /*--==========================================================================--*/
 
@@ -283,6 +278,10 @@ syscall_rename_at :: #force_inline proc "contextless" (from_fd: c.int, from: cst
 
 syscall_lseek :: #force_inline proc "contextless" (fd: c.int, offset: i64, whence: c.int) -> i64 {
 	return cast(i64)intrinsics.syscall(unix_offset_syscall(.lseek), uintptr(fd), uintptr(offset), uintptr(whence))
+}
+
+syscall_ioctl :: #force_inline proc "contextless" (fd: c.int, request: u32, arg: rawptr) -> c.int {
+	return (cast(c.int)intrinsics.syscall(unix_offset_syscall(.ioctl), uintptr(fd), uintptr(request), uintptr(arg)))
 }
 
 syscall_gettid :: #force_inline proc "contextless" () -> u64 {
@@ -424,4 +423,12 @@ syscall_fchdir :: #force_inline proc "contextless" (fd: c.int, path: cstring) ->
 
 syscall_getrusage :: #force_inline proc "contextless" (who: c.int, rusage: ^RUsage) -> c.int {
 	return cast(c.int) intrinsics.syscall(unix_offset_syscall(.getrusage), uintptr(who), uintptr(rusage))
+}
+
+syscall_shm_open :: #force_inline proc "contextless" (name: cstring, oflag: u32, mode: u32) -> c.int {
+	return cast(c.int)intrinsics.syscall(unix_offset_syscall(.shm_open), transmute(uintptr)name, uintptr(oflag), uintptr(mode))
+}
+
+syscall_shm_unlink :: #force_inline proc "contextless" (name: cstring) -> c.int {
+	return cast(c.int)intrinsics.syscall(unix_offset_syscall(.shm_unlink), transmute(uintptr)name)
 }

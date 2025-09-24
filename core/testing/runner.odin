@@ -1,21 +1,31 @@
-//+private
+#+private
 package testing
+
+/*
+	(c) Copyright 2024 Feoramund <rune@swevencraft.org>.
+	Made available under Odin's BSD-3 license.
+
+	List of contributors:
+		Ginger Bill: Initial implementation.
+		Feoramund:   Total rewrite.
+*/
 
 import "base:intrinsics"
 import "base:runtime"
 import "core:bytes"
-import "core:encoding/ansi"
 @require import "core:encoding/base64"
 @require import "core:encoding/json"
 import "core:fmt"
 import "core:io"
-@require import pkg_log "core:log"
+@require import "core:log"
 import "core:math/rand"
 import "core:mem"
 import "core:os"
 import "core:slice"
 @require import "core:strings"
 import "core:sync/chan"
+import "core:terminal"
+import "core:terminal/ansi"
 import "core:thread"
 import "core:time"
 
@@ -25,6 +35,8 @@ TEST_THREADS          : int    : #config(ODIN_TEST_THREADS, 0)
 TRACKING_MEMORY       : bool   : #config(ODIN_TEST_TRACK_MEMORY, true)
 // Always report how much memory is used, even when there are no leaks or bad frees.
 ALWAYS_REPORT_MEMORY  : bool   : #config(ODIN_TEST_ALWAYS_REPORT_MEMORY, false)
+// Treat memory leaks and bad frees as errors.
+FAIL_ON_BAD_MEMORY    : bool   : #config(ODIN_TEST_FAIL_ON_BAD_MEMORY, false)
 // Specify how much memory each thread allocator starts with.
 PER_THREAD_MEMORY     : int    : #config(ODIN_TEST_THREAD_MEMORY, mem.ROLLBACK_STACK_DEFAULT_BLOCK_SIZE)
 // Select a specific set of tests to run by name.
@@ -33,6 +45,7 @@ PER_THREAD_MEMORY     : int    : #config(ODIN_TEST_THREAD_MEMORY, mem.ROLLBACK_S
 // The format is: `package.test_name,test_name_only,...`
 TEST_NAMES            : string : #config(ODIN_TEST_NAMES, "")
 // Show the fancy animated progress report.
+// This requires terminal color support, as well as STDOUT to not be redirected to a file.
 FANCY_OUTPUT          : bool   : #config(ODIN_TEST_FANCY, true)
 // Copy failed tests to the clipboard when done.
 USE_CLIPBOARD         : bool   : #config(ODIN_TEST_CLIPBOARD, false)
@@ -42,26 +55,27 @@ PROGRESS_WIDTH        : int    : #config(ODIN_TEST_PROGRESS_WIDTH, 24)
 // If it is unspecified, it will be set to the system cycle counter at startup.
 SHARED_RANDOM_SEED    : u64    : #config(ODIN_TEST_RANDOM_SEED, 0)
 // Set the lowest log level for this test run.
-LOG_LEVEL             : string : #config(ODIN_TEST_LOG_LEVEL, "info")
+LOG_LEVEL_DEFAULT     : string : "debug" when ODIN_DEBUG else "info"
+LOG_LEVEL             : string : #config(ODIN_TEST_LOG_LEVEL, LOG_LEVEL_DEFAULT)
+// Report a message at the info level when a test has changed its state.
+LOG_STATE_CHANGES     : bool   : #config(ODIN_TEST_LOG_STATE_CHANGES, false)
 // Show only the most necessary logging information.
 USING_SHORT_LOGS      : bool   : #config(ODIN_TEST_SHORT_LOGS, false)
 // Output a report of the tests to the given path.
 JSON_REPORT           : string : #config(ODIN_TEST_JSON_REPORT, "")
 
 get_log_level :: #force_inline proc() -> runtime.Logger_Level {
-	when ODIN_DEBUG {
-		// Always use .Debug in `-debug` mode.
-		return .Debug
-	} else {
-		when LOG_LEVEL == "debug"   { return .Debug   } else
-		when LOG_LEVEL == "info"    { return .Info    } else
-		when LOG_LEVEL == "warning" { return .Warning } else
-		when LOG_LEVEL == "error"   { return .Error   } else
-		when LOG_LEVEL == "fatal"   { return .Fatal   } else {
-			#panic("Unknown `ODIN_TEST_LOG_LEVEL`: \"" + LOG_LEVEL + "\", possible levels are: \"debug\", \"info\", \"warning\", \"error\", or \"fatal\".")
-		}
+	when LOG_LEVEL == "debug"   { return .Debug   } else
+	when LOG_LEVEL == "info"    { return .Info    } else
+	when LOG_LEVEL == "warning" { return .Warning } else
+	when LOG_LEVEL == "error"   { return .Error   } else
+	when LOG_LEVEL == "fatal"   { return .Fatal   } else {
+		#panic("Unknown `ODIN_TEST_LOG_LEVEL`: \"" + LOG_LEVEL + "\", possible levels are: \"debug\", \"info\", \"warning\", \"error\", or \"fatal\".")
 	}
 }
+
+@(private) global_log_colors_disabled: bool
+@(private) global_ansi_disabled: bool
 
 JSON :: struct {
 	total:    int,
@@ -86,10 +100,19 @@ end_t :: proc(t: ^T) {
 	t.cleanups = {}
 }
 
-Task_Data :: struct {
-	it: Internal_Test,
-	t: T,
-	allocator_index: int,
+when TRACKING_MEMORY && FAIL_ON_BAD_MEMORY {
+	Task_Data :: struct {
+		it: Internal_Test,
+		t: T,
+		allocator_index: int,
+		tracking_allocator: ^mem.Tracking_Allocator,
+	}
+} else {
+	Task_Data :: struct {
+		it: Internal_Test,
+		t: T,
+		allocator_index: int,
+	}
 }
 
 Task_Timeout :: struct {
@@ -113,11 +136,16 @@ run_test_task :: proc(task: thread.Task) {
 	
 	context.assertion_failure_proc = test_assertion_failure_proc
 
+	logger_options := Default_Test_Logger_Opts
+	if global_log_colors_disabled {
+		logger_options -= {.Terminal_Color}
+	}
+
 	context.logger = {
 		procedure = test_logger_proc,
 		data = &data.t,
 		lowest_level = get_log_level(),
-		options = Default_Test_Logger_Opts,
+		options = logger_options,
 	}
 
 	random_generator_state: runtime.Default_Random_State
@@ -132,6 +160,31 @@ run_test_task :: proc(task: thread.Task) {
 	data.it.p(&data.t)
 
 	end_t(&data.t)
+
+	when TRACKING_MEMORY && FAIL_ON_BAD_MEMORY {
+		// NOTE(Feoramund): The simplest way to handle treating memory failures
+		// as errors is to allow the test task runner to access the tracking
+		// allocator itself.
+		//
+		// This way, it's still able to send up a log message, which will be
+		// used in the end summary, and it can set the test state to `Failed`
+		// under the usual conditions.
+		//
+		// No outside intervention needed.
+		memory_leaks := len(data.tracking_allocator.allocation_map)
+		bad_frees    := len(data.tracking_allocator.bad_free_array)
+
+		memory_is_in_bad_state := memory_leaks + bad_frees > 0
+
+		data.t.error_count += memory_leaks + bad_frees
+
+		if memory_is_in_bad_state {
+			log.errorf("Memory failure in `%s.%s` with %i leak%s and %i bad free%s.",
+				data.it.pkg, data.it.name,
+				memory_leaks, "" if memory_leaks == 1 else "s",
+				bad_frees, "" if bad_frees == 1 else "s")
+		}
+	}
 
 	new_state : Test_State = .Failed if failed(&data.t) else .Successful
 
@@ -165,6 +218,13 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 
 	stdout := io.to_writer(os.stream_from_handle(os.stdout))
 	stderr := io.to_writer(os.stream_from_handle(os.stderr))
+
+	// The animations are only ever shown through STDOUT;
+	// STDERR is used exclusively for logging regardless of error level.
+	global_log_colors_disabled = !terminal.color_enabled || !terminal.is_terminal(os.stderr)
+	global_ansi_disabled       = !terminal.is_terminal(os.stdout)
+
+	should_show_animations := FANCY_OUTPUT && terminal.color_enabled && !global_ansi_disabled
 
 	// -- Prepare test data.
 
@@ -223,12 +283,12 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 	total_done_count    := 0
 	total_test_count    := len(internal_tests)
 
-	when !FANCY_OUTPUT {
-		// This is strictly for updating the window title when the progress
-		// report is disabled. We're otherwise able to depend on the call to
-		// `needs_to_redraw`.
-		last_done_count := -1
-	}
+
+	// This is strictly for updating the window title when the progress
+	// report is disabled. We're otherwise able to depend on the call to
+	// `needs_to_redraw`.
+	last_done_count := -1
+
 
 	if total_test_count == 0 {
 		// Exit early.
@@ -297,31 +357,31 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 	fmt.assertf(alloc_error == nil, "Error allocating memory for test report: %v", alloc_error)
 	defer destroy_report(&report)
 
-	when FANCY_OUTPUT {
-		// We cannot make use of the ANSI save/restore cursor codes, because they
-		// work by absolute screen coordinates. This will cause unnecessary
-		// scrollback if we print at the bottom of someone's terminal.
-		ansi_redraw_string := fmt.aprintf(
-			// ANSI for "go up N lines then erase the screen from the cursor forward."
-			ansi.CSI + "%i" + ansi.CPL + ansi.CSI + ansi.ED +
-			// We'll combine this with the window title format string, since it
-			// can be printed at the same time.
-			"%s",
-			// 1 extra line for the status bar.
-			1 + len(report.packages), OSC_WINDOW_TITLE)
-		assert(len(ansi_redraw_string) > 0, "Error allocating ANSI redraw string.")
-		defer delete(ansi_redraw_string)
 
-		thread_count_status_string: string = ---
-		{
-			PADDING :: PROGRESS_COLUMN_SPACING + PROGRESS_WIDTH
+	// We cannot make use of the ANSI save/restore cursor codes, because they
+	// work by absolute screen coordinates. This will cause unnecessary
+	// scrollback if we print at the bottom of someone's terminal.
+	ansi_redraw_string := fmt.aprintf(
+		// ANSI for "go up N lines then erase the screen from the cursor forward."
+		ansi.CSI + "%i" + ansi.CPL + ansi.CSI + ansi.ED +
+		// We'll combine this with the window title format string, since it
+		// can be printed at the same time.
+		"%s",
+		// 1 extra line for the status bar.
+		1 + len(report.packages), OSC_WINDOW_TITLE)
+	assert(len(ansi_redraw_string) > 0, "Error allocating ANSI redraw string.")
+	defer delete(ansi_redraw_string)
 
-			unpadded := fmt.tprintf("%i thread%s", thread_count, "" if thread_count == 1 else "s")
-			thread_count_status_string = fmt.aprintf("%- *[1]s", unpadded, report.pkg_column_len + PADDING)
-			assert(len(thread_count_status_string) > 0, "Error allocating thread count status string.")
-		}
-		defer delete(thread_count_status_string)
+	thread_count_status_string: string = ---
+	{
+		PADDING :: PROGRESS_COLUMN_SPACING + PROGRESS_WIDTH
+
+		unpadded := fmt.tprintf("%i thread%s", thread_count, "" if thread_count == 1 else "s")
+		thread_count_status_string = fmt.aprintf("%- *[1]s", unpadded, report.pkg_column_len + PADDING)
+		assert(len(thread_count_status_string) > 0, "Error allocating thread count status string.")
 	}
+	defer delete(thread_count_status_string)
+
 
 	task_data_slots: []Task_Data = ---
 	task_data_slots, alloc_error = make([]Task_Data, thread_count)
@@ -346,6 +406,7 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 		fmt.assertf(alloc_error == nil, "Error allocating memory for task allocator #%i: %v", i, alloc_error)
 		when TRACKING_MEMORY {
 			mem.tracking_allocator_init(&task_memory_trackers[i], mem.rollback_stack_allocator(&task_allocators[i]))
+			task_memory_trackers[i].bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
 		}
 	}
 
@@ -396,11 +457,16 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 	// digging through the source to divine everywhere it is used for that.
 	shared_log_allocator := context.allocator
 
+	logger_options := Default_Test_Logger_Opts - {.Short_File_Path, .Line, .Procedure}
+	if global_log_colors_disabled {
+		logger_options -= {.Terminal_Color}
+	}
+
 	context.logger = {
 		procedure = runner_logger_proc,
 		data = &log_messages,
 		lowest_level = get_log_level(),
-		options = Default_Test_Logger_Opts - {.Short_File_Path, .Line, .Procedure},
+		options = logger_options,
 	}
 
 	run_index: int
@@ -418,6 +484,9 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 
 			#no_bounds_check when TRACKING_MEMORY {
 				task_allocator := mem.tracking_allocator(&task_memory_trackers[task_index])
+				when FAIL_ON_BAD_MEMORY {
+					data.tracking_allocator = &task_memory_trackers[task_index]
+				}
 			} else {
 				task_allocator := mem.rollback_stack_allocator(&task_allocators[task_index])
 			}
@@ -432,40 +501,47 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 
 	setup_signal_handler()
 
-	fmt.wprint(stdout, ansi.CSI + ansi.DECTCEM_HIDE)
+	if !global_ansi_disabled {
+		fmt.wprint(stdout, ansi.CSI + ansi.DECTCEM_HIDE)
+	}
 
-	when FANCY_OUTPUT {
-		signals_were_raised := false
+	signals_were_raised := false
 
+	if should_show_animations {
 		redraw_report(stdout, report)
 		draw_status_bar(stdout, thread_count_status_string, total_done_count, total_test_count)
 	}
 
 	when TEST_THREADS == 0 {
-		pkg_log.infof("Starting test runner with %i thread%s. Set with -define:ODIN_TEST_THREADS=n.",
+		log.infof("Starting test runner with %i thread%s. Set with -define:ODIN_TEST_THREADS=n.",
 			thread_count,
 			"" if thread_count == 1 else "s")
 	} else {
-		pkg_log.infof("Starting test runner with %i thread%s.",
+		log.infof("Starting test runner with %i thread%s.",
 			thread_count,
 			"" if thread_count == 1 else "s")
 	}
 
 	when SHARED_RANDOM_SEED == 0 {
-		pkg_log.infof("The random seed sent to every test is: %v. Set with -define:ODIN_TEST_RANDOM_SEED=n.", shared_random_seed)
+		log.infof("The random seed sent to every test is: %v. Set with -define:ODIN_TEST_RANDOM_SEED=n.", shared_random_seed)
 	} else {
-		pkg_log.infof("The random seed sent to every test is: %v.", shared_random_seed)
+		log.infof("The random seed sent to every test is: %v.", shared_random_seed)
 	}
 
 	when TRACKING_MEMORY {
 		when ALWAYS_REPORT_MEMORY {
-			pkg_log.info("Memory tracking is enabled. Tests will log their memory usage when complete.")
+			log.info("Memory tracking is enabled. Tests will log their memory usage when complete.")
 		} else {
-			pkg_log.info("Memory tracking is enabled. Tests will log their memory usage if there's an issue.")
+			log.info("Memory tracking is enabled. Tests will log their memory usage if there's an issue.")
 		}
-		pkg_log.info("< Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]")
-	} else when ALWAYS_REPORT_MEMORY {
-		pkg_log.warn("ODIN_TEST_ALWAYS_REPORT_MEMORY is true, but ODIN_TRACK_MEMORY is false.")
+		log.info("< Final Mem/ Total Mem> <  Peak Mem> (#Free/Alloc) :: [package.test_name]")
+	} else {
+		when ALWAYS_REPORT_MEMORY {
+			log.warn("ODIN_TEST_ALWAYS_REPORT_MEMORY is true, but ODIN_TEST_TRACK_MEMORY is false.")
+		}
+		when FAIL_ON_BAD_MEMORY {
+			log.warn("ODIN_TEST_FAIL_ON_BAD_MEMORY is true, but ODIN_TEST_TRACK_MEMORY is false.")
+		}
 	}
 
 	start_time := time.now()
@@ -507,7 +583,11 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 				if should_report {
 					write_memory_report(batch_writer, tracker, data.it.pkg, data.it.name)
 
-					pkg_log.log(.Warning if memory_is_in_bad_state else .Info, bytes.buffer_to_string(&batch_buffer))
+					when FAIL_ON_BAD_MEMORY {
+						log.log(.Error if memory_is_in_bad_state else .Info, bytes.buffer_to_string(&batch_buffer))
+					} else {
+						log.log(.Warning if memory_is_in_bad_state else .Info, bytes.buffer_to_string(&batch_buffer))
+					}
 					bytes.buffer_reset(&batch_buffer)
 				}
 
@@ -553,8 +633,8 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 						total_done_count += 1
 					}
 
-					when ODIN_DEBUG {
-						pkg_log.debugf("Test #%i %s.%s changed state to %v.", task_channel.test_index, it.pkg, it.name, event.new_state)
+					when LOG_STATE_CHANGES {
+						log.infof("Test #%i %s.%s changed state to %v.", task_channel.test_index, it.pkg, it.name, event.new_state)
 					}
 
 					pkg.last_change_state = event.new_state
@@ -645,25 +725,26 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 			break main_loop
 		}
 
-		when FANCY_OUTPUT {
-			// Because the bounds checking procs send directly to STDERR with
-			// no way to redirect or handle them, we need to at least try to
-			// let the user see those messages when using the animated progress
-			// report. This flag may be set by the block of code below if a
-			// signal is raised.
-			//
-			// It'll be purely by luck if the output is interleaved properly,
-			// given the nature of non-thread-safe printing.
-			//
-			// At worst, if Odin did not print any error for this signal, we'll
-			// just re-display the progress report. The fatal log error message
-			// should be enough to clue the user in that something dire has
-			// occurred.
-			bypass_progress_overwrite := false
-		}
+
+		// Because the bounds checking procs send directly to STDERR with
+		// no way to redirect or handle them, we need to at least try to
+		// let the user see those messages when using the animated progress
+		// report. This flag may be set by the block of code below if a
+		// signal is raised.
+		//
+		// It'll be purely by luck if the output is interleaved properly,
+		// given the nature of non-thread-safe printing.
+		//
+		// At worst, if Odin did not print any error for this signal, we'll
+		// just re-display the progress report. The fatal log error message
+		// should be enough to clue the user in that something dire has
+		// occurred.
+		bypass_progress_overwrite := false
+
 
 		if test_index, reason, ok := should_stop_test(); ok {
-			#no_bounds_check report.all_test_states[test_index] = .Failed
+			passed := reason == .Successful_Stop
+			#no_bounds_check report.all_test_states[test_index] = .Successful if passed else .Failed
 			#no_bounds_check it := internal_tests[test_index]
 			#no_bounds_check pkg := report.packages_by_name[it.pkg]
 			pkg.frame_ready = false
@@ -684,17 +765,17 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 			fmt.assertf(task_data != nil, "A signal (%v) was raised to stop test #%i %s.%s, but its task data is missing.",
 				reason, test_index, it.pkg, it.name)
 
-			if !task_data.t._fail_now_called {
+			if !passed && !task_data.t._fail_now_called {
 				if test_index not_in failed_test_reason_map {
 					// We only write a new error message here if there wasn't one
 					// already, because the message we can provide based only on
 					// the signal won't be very useful, whereas asserts and panics
 					// will provide a user-written error message.
 					failed_test_reason_map[test_index] = fmt.aprintf("Signal caught: %v", reason, allocator = shared_log_allocator)
-					pkg_log.fatalf("Caught signal to stop test #%i %s.%s for: %v.", test_index, it.pkg, it.name, reason)
+					log.fatalf("Caught signal to stop test #%i %s.%s for: %v.", test_index, it.pkg, it.name, reason)
 				}
 
-				when FANCY_OUTPUT {
+				if should_show_animations {
 					bypass_progress_overwrite = true
 					signals_were_raised = true
 				}
@@ -702,13 +783,17 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 
 			end_t(&task_data.t)
 
-			total_failure_count += 1
+			if passed {
+				total_success_count += 1
+			} else {
+				total_failure_count += 1
+			}
 			total_done_count += 1
 		}
 
 		// -- Redraw.
 
-		when FANCY_OUTPUT {
+		if should_show_animations {
 			if len(log_messages) == 0 && !needs_to_redraw(report) {
 				continue main_loop
 			}
@@ -718,7 +803,9 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 			}
 		} else {
 			if total_done_count != last_done_count {
-				fmt.wprintf(stdout, OSC_WINDOW_TITLE, total_done_count, total_test_count)
+				if !global_ansi_disabled {
+					fmt.wprintf(stdout, OSC_WINDOW_TITLE, total_done_count, total_test_count)
+				}
 				last_done_count = total_done_count
 			}
 
@@ -743,7 +830,7 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 		clear(&log_messages)
 		bytes.buffer_reset(&batch_buffer)
 
-		when FANCY_OUTPUT {
+		if should_show_animations {
 			redraw_report(batch_writer, report)
 			draw_status_bar(batch_writer, thread_count_status_string, total_done_count, total_test_count)
 			fmt.wprint(stdout, bytes.buffer_to_string(&batch_buffer))
@@ -764,7 +851,7 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 
 	finished_in := time.since(start_time)
 
-	when !FANCY_OUTPUT {
+	if !should_show_animations || !terminal.is_terminal(os.stderr) {
 		// One line to space out the results, since we don't have the status
 		// bar in plain mode.
 		fmt.wprintln(batch_writer)
@@ -778,24 +865,28 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 	
 	if total_done_count != total_test_count {
 		not_run_count := total_test_count - total_done_count
+		message := " %i %s left undone." if global_log_colors_disabled else " " + SGR_READY + "%i" + SGR_RESET + " %s left undone."
 		fmt.wprintf(batch_writer,
-			" " + SGR_READY + "%i" + SGR_RESET + " %s left undone.",
+			message,
 			not_run_count,
 			"test was" if not_run_count == 1 else "tests were")
 	}
 
 	if total_success_count == total_test_count {
+		message := " %s successful." if global_log_colors_disabled else " %s " + SGR_SUCCESS + "successful." + SGR_RESET
 		fmt.wprintfln(batch_writer,
-			" %s " + SGR_SUCCESS + "successful." + SGR_RESET,
+			message,
 			"The test was" if total_test_count == 1 else "All tests were")
 	} else if total_failure_count > 0 {
 		if total_failure_count == total_test_count {
+			message := " %s failed." if global_log_colors_disabled else " %s " + SGR_FAILED + "failed." + SGR_RESET
 			fmt.wprintfln(batch_writer,
-				" %s " + SGR_FAILED + "failed." + SGR_RESET,
+				message,
 				"The test" if total_test_count == 1 else "All tests")
 		} else {
+			message := " %i test%s failed." if global_log_colors_disabled else " " + SGR_FAILED + "%i" + SGR_RESET + " test%s failed."
 			fmt.wprintfln(batch_writer,
-				" " + SGR_FAILED + "%i" + SGR_RESET + " test%s failed.",
+				message,
 				total_failure_count,
 				"" if total_failure_count == 1 else "s")
 		}
@@ -849,9 +940,11 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 		}
 	}
 
-	fmt.wprint(stdout, ansi.CSI + ansi.DECTCEM_SHOW)
+	if !global_ansi_disabled {
+		fmt.wprint(stdout, ansi.CSI + ansi.DECTCEM_SHOW)
+	}
 
-	when FANCY_OUTPUT {
+	if should_show_animations {
 		if signals_were_raised {
 			fmt.wprintln(batch_writer, `
 Signals were raised during this test run. Log messages are likely to have collided with each other.

@@ -1,10 +1,10 @@
-//+build js
+#+build js
 package runtime
 
 init_default_context_for_js: Context
 @(init, private="file")
-init_default_context :: proc() {
-	init_default_context_for_js = context
+init_default_context :: proc "contextless" () {
+	__init_context(&init_default_context_for_js)
 }
 
 @(export)

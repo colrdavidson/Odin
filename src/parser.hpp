@@ -82,6 +82,7 @@ enum AstFileFlag : u32 {
 enum AstDelayQueueKind {
 	AstDelayQueue_Import,
 	AstDelayQueue_Expr,
+	AstDelayQueue_ForeignBlock,
 	AstDelayQueue_COUNT,
 };
 
@@ -107,7 +108,9 @@ struct AstFile {
 	String       package_name;
 
 	u64          vet_flags;
+	u64          feature_flags;
 	bool         vet_flags_set;
+	bool         feature_flags_set;
 
 	// >= 0: In Expression
 	// <  0: In Control Clause
@@ -393,6 +396,7 @@ struct AstSplitArgs {
 	AST_KIND(Ident,          "identifier",      struct { \
 		Token   token;  \
 		Entity *entity; \
+		u32     hash;   \
 	}) \
 	AST_KIND(Implicit,       "implicit",        Token) \
 	AST_KIND(Uninit,         "uninitialized value", Token) \
@@ -560,6 +564,7 @@ AST_KIND(_ComplexStmtBegin, "", bool) \
 	AST_KIND(UnrollRangeStmt, "#unroll range statement", struct { \
 		Scope *scope; \
 		Token unroll_token; \
+		Slice<Ast *> args; \
 		Token for_token; \
 		Ast *val0; \
 		Ast *val1; \
@@ -735,7 +740,8 @@ AST_KIND(_TypeBegin, "", bool) \
 		isize field_count;          \
 		Ast *polymorphic_params;    \
 		Ast *align;                 \
-		Ast *field_align;           \
+		Ast *min_field_align;       \
+		Ast *max_field_align;       \
 		Token where_token;          \
 		Slice<Ast *> where_clauses; \
 		bool is_packed;             \
@@ -886,3 +892,6 @@ gb_internal Ast *alloc_ast_node(AstFile *f, AstKind kind);
 
 gb_internal gbString expr_to_string(Ast *expression);
 gb_internal bool allow_field_separator(AstFile *f);
+
+
+gb_internal void parse_enforce_tabs(AstFile *f);

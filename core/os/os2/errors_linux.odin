@@ -1,7 +1,9 @@
-//+private
+#+private
 package os2
 
 import "core:sys/linux"
+
+_Platform_Error :: linux.Errno
 
 @(rodata)
 _errno_strings := [linux.Errno]string{
@@ -152,6 +154,16 @@ _get_platform_error :: proc(errno: linux.Errno) -> Error {
 		return .Exist
 	case .ENOENT:
 		return .Not_Exist
+	case .ETIMEDOUT:
+		return .Timeout
+	case .EPIPE:
+		return .Broken_Pipe
+	case .EBADF:
+		return .Invalid_File
+	case .ENOMEM:
+		return .Out_Of_Memory
+	case .ENOSYS:
+		return .Unsupported
 	}
 
 	return Platform_Error(i32(errno))

@@ -2,6 +2,12 @@
 Copyright 2022 Jeroen van Rijn <nom@duclavier.com>.
 Made available under Odin's BSD-3 license.
 
+List of contributors:
+	Jeroen van Rijn: Initial implementation.
+	Laytan: ARM and RISC-V CPU feature detection, iOS/macOS platform overhaul.
+*/
+
+/*
 Package `core:sys/info` gathers system information on:
 Windows, Linux, macOS, FreeBSD & OpenBSD.
 
@@ -11,21 +17,24 @@ and CPU information.
 On Windows, GPUs will also be enumerated using the registry.
 
 CPU feature flags can be tested against `cpu_features`, where applicable, e.g.
-`if .aes in si.aes { ... }`
+`if .aes in info.cpu_features.? { ... }`
 
 Example:
+	package main
 
 	import "core:fmt"
 	import si "core:sys/info"
 
 	main :: proc() {
-		fmt.printfln("Odin:  %v",    ODIN_VERSION)
-		fmt.printfln("OS:    %v",    si.os_version.as_string)
-		fmt.printfln("OS:    %#v",   si.os_version)
-		fmt.printfln("CPU:   %v",    si.cpu_name)
-		fmt.printfln("RAM:   %#.1M", si.ram.total_ram)
+		fmt.printfln("Odin:      %v",      ODIN_VERSION)
+		fmt.printfln("OS:        %v",      si.os_version.as_string)
+		fmt.printfln("OS:        %#v",     si.os_version)
+		fmt.printfln("CPU:       %v",      si.cpu.name)
+		fmt.printfln("CPU:       %v",      si.cpu.name)
+		fmt.printfln("CPU cores: %vc/%vt", si.cpu.physical_cores, si.cpu.logical_cores)
+		fmt.printfln("RAM:       %#.1M",   si.ram.total_ram)
 
-		// fmt.printfln("Features: %v",      si.cpu_features)
+		// fmt.printfln("Features: %v",      si.cpu.features)
 		// fmt.printfln("MacOS version: %v", si.macos_version)
 
 		fmt.println()

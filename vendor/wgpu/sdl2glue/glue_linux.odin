@@ -5,16 +5,18 @@ import "vendor:wgpu"
 
 GetSurface :: proc(instance: wgpu.Instance, window: ^sdl2.Window) -> wgpu.Surface {
 	window_info: sdl2.SysWMinfo 
+	sdl2.VERSION(&window_info.version)
 	sdl2.GetWindowWMInfo(window, &window_info)
+
 	if window_info.subsystem == .WAYLAND {
 		display := window_info.info.wl.display
 		surface := window_info.info.wl.surface
 		return wgpu.InstanceCreateSurface(
 			instance,
 			&wgpu.SurfaceDescriptor{
-				nextInChain = &wgpu.SurfaceDescriptorFromWaylandSurface{
+				nextInChain = &wgpu.SurfaceSourceWaylandSurface{
 					chain = {
-						sType = .SurfaceDescriptorFromWaylandSurface,
+						sType = .SurfaceSourceWaylandSurface,
 					},
 					display = display,
 					surface = surface,
@@ -27,9 +29,9 @@ GetSurface :: proc(instance: wgpu.Instance, window: ^sdl2.Window) -> wgpu.Surfac
 		return wgpu.InstanceCreateSurface(
 			instance,
 			&wgpu.SurfaceDescriptor{
-				nextInChain = &wgpu.SurfaceDescriptorFromXlibWindow{
+				nextInChain = &wgpu.SurfaceSourceXlibWindow{
 					chain = {
-						sType = .SurfaceDescriptorFromXlibWindow,
+						sType = .SurfaceSourceXlibWindow,
 					},
 					display = display,
 					window  = u64(window),

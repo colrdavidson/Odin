@@ -1,9 +1,9 @@
-//+build freebsd
+#+build freebsd
 package unix
 
 import "base:intrinsics"
 
-sysctl :: proc(mib: []i32, val: ^$T) -> (ok: bool) {
+sysctl :: proc "contextless" (mib: []i32, val: ^$T) -> (ok: bool) {
 	mib := mib
 	result_size := u64(size_of(T))
 
@@ -23,6 +23,8 @@ CTL_KERN   :: 1
 	KERN_OSRELEASE :: 2
 	KERN_OSREV     :: 3
 	KERN_VERSION   :: 4
+	KERN_PROC      :: 14
+		KERN_PROC_PATHNAME :: 12
 CTL_VM     :: 2
 CTL_VFS    :: 3
 CTL_NET    :: 4

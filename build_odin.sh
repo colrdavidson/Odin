@@ -6,32 +6,49 @@ set -eu
 : ${LDFLAGS=}
 : ${LLVM_CONFIG=}
 
-CPPFLAGS="$CPPFLAGS -DODIN_VERSION_RAW=\"dev-$(date +"%Y-%m")\""
 CXXFLAGS="$CXXFLAGS -std=c++14 -finstrument-functions-after-inlining"
 DISABLED_WARNINGS="-Wno-switch -Wno-macro-redefined -Wno-unused-value"
-LDFLAGS="$LDFLAGS -pthread -lm -lstdc++"
+LDFLAGS="$LDFLAGS -pthread -lm"
 OS_ARCH="$(uname -m)"
 OS_NAME="$(uname -s)"
 
 if [ -d ".git" ] && [ -n "$(command -v git)" ]; then
 	GIT_SHA=$(git show --pretty='%h' --no-patch --no-notes HEAD)
+	GIT_DATE=$(git show "--pretty=%cd" "--date=format:%Y-%m" --no-patch --no-notes HEAD)
 	CPPFLAGS="$CPPFLAGS -DGIT_SHA=\"$GIT_SHA\""
+else
+	GIT_DATE=$(date +"%Y-%m")
 fi
+CPPFLAGS="$CPPFLAGS -DODIN_VERSION_RAW=\"dev-$GIT_DATE\""
 
 error() {
 	printf "ERROR: %s\n" "$1"
 	exit 1
 }
 
+# Brew advises people not to add llvm to their $PATH, so try and use brew to find it.
+if [ -z "$LLVM_CONFIG" ] &&  [ -n "$(command -v brew)" ]; then
+    if   [ -n "$(command -v $(brew --prefix llvm@20)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@20)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@19)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@19)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@18)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@18)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@17)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@17)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@14)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@14)/bin/llvm-config"
+    fi
+fi
+
 if [ -z "$LLVM_CONFIG" ]; then
 	# darwin, linux, openbsd
-	if   [ -n "$(command -v llvm-config-18)" ]; then LLVM_CONFIG="llvm-config-18"
+	if   [ -n "$(command -v llvm-config-20)" ]; then LLVM_CONFIG="llvm-config-20"
+	elif [ -n "$(command -v llvm-config-19)" ]; then LLVM_CONFIG="llvm-config-19"
+	elif [ -n "$(command -v llvm-config-18)" ]; then LLVM_CONFIG="llvm-config-18"
 	elif [ -n "$(command -v llvm-config-17)" ]; then LLVM_CONFIG="llvm-config-17"
 	elif [ -n "$(command -v llvm-config-14)" ]; then LLVM_CONFIG="llvm-config-14"
 	elif [ -n "$(command -v llvm-config-13)" ]; then LLVM_CONFIG="llvm-config-13"
 	elif [ -n "$(command -v llvm-config-12)" ]; then LLVM_CONFIG="llvm-config-12"
 	elif [ -n "$(command -v llvm-config-11)" ]; then LLVM_CONFIG="llvm-config-11"
 	# freebsd
+	elif [ -n "$(command -v llvm-config20)" ]; then  LLVM_CONFIG="llvm-config20"
+	elif [ -n "$(command -v llvm-config19)" ]; then  LLVM_CONFIG="llvm-config19"
 	elif [ -n "$(command -v llvm-config18)" ]; then  LLVM_CONFIG="llvm-config18"
 	elif [ -n "$(command -v llvm-config17)" ]; then  LLVM_CONFIG="llvm-config17"
 	elif [ -n "$(command -v llvm-config14)" ]; then  LLVM_CONFIG="llvm-config14"
@@ -58,15 +75,15 @@ LLVM_VERSION_MAJOR="$(echo $LLVM_VERSION | awk -F. '{print $1}')"
 LLVM_VERSION_MINOR="$(echo $LLVM_VERSION | awk -F. '{print $2}')"
 LLVM_VERSION_PATCH="$(echo $LLVM_VERSION | awk -F. '{print $3}')"
 
-if [ $LLVM_VERSION_MAJOR -lt 11 ] || ([ $LLVM_VERSION_MAJOR -gt 14 ] && [ $LLVM_VERSION_MAJOR -lt 17 ]) || [ $LLVM_VERSION_MAJOR -gt 18 ]; then
-	error "Invalid LLVM version $LLVM_VERSION: must be 11, 12, 13, 14, 17 or 18"
+if [ $LLVM_VERSION_MAJOR -lt 11 ] || ([ $LLVM_VERSION_MAJOR -gt 14 ] && [ $LLVM_VERSION_MAJOR -lt 17 ]) || [ $LLVM_VERSION_MAJOR -gt 20 ]; then
+	error "Invalid LLVM version $LLVM_VERSION: must be 11, 12, 13, 14, 17, 18, 19 or 20"
 fi
 
 case "$OS_NAME" in
 Darwin)
 	if [ "$OS_ARCH" = "arm64" ]; then
 		if [ $LLVM_VERSION_MAJOR -lt 13 ]; then
-			error "Invalid LLVM version $LLVM_VERSION: Darwin Arm64 requires LLVM 13, 14, 17 or 18"
+			error "Invalid LLVM version $LLVM_VERSION: Darwin Arm64 requires LLVM 13, 14, 17, 18, 19 or 20"
 		fi
 	fi
 
@@ -84,28 +101,28 @@ Darwin)
 	;;
 FreeBSD)
 	CXXFLAGS="$CXXFLAGS $($LLVM_CONFIG --cxxflags --ldflags)"
-	LDFLAGS="$LDFLAGS $($LLVM_CONFIG --libs core native --system-libs)"
+	LDFLAGS="$LDFLAGS -lstdc++ $($LLVM_CONFIG --libs core native --system-libs)"
 	;;
 NetBSD)
 	CXXFLAGS="$CXXFLAGS $($LLVM_CONFIG --cxxflags --ldflags)"
-	LDFLAGS="$LDFLAGS $($LLVM_CONFIG --libs core native --system-libs)"
+	LDFLAGS="$LDFLAGS -lstdc++ $($LLVM_CONFIG --libs core native --system-libs)"
 	;;
 Linux)
 	CXXFLAGS="$CXXFLAGS $($LLVM_CONFIG --cxxflags --ldflags)"
-	LDFLAGS="$LDFLAGS -ldl $($LLVM_CONFIG --libs core native --system-libs --libfiles)"
+	LDFLAGS="$LDFLAGS -lstdc++ -ldl $($LLVM_CONFIG --libs core native --system-libs --libfiles)"
 	# Copy libLLVM*.so into current directory for linking
 	# NOTE: This is needed by the Linux release pipeline!
-	cp $(readlink -f $($LLVM_CONFIG --libfiles)) ./
+	# cp $(readlink -f $($LLVM_CONFIG --libfiles)) ./
 	LDFLAGS="$LDFLAGS -Wl,-rpath=\$ORIGIN"
 	;;
 OpenBSD)
-	CXXFLAGS="$CXXFLAGS $($LLVM_CONFIG --cxxflags --ldflags)"
-	LDFLAGS="$LDFLAGS -liconv"
+	CXXFLAGS="$CXXFLAGS -I/usr/local/include $($LLVM_CONFIG --cxxflags --ldflags)"
+	LDFLAGS="$LDFLAGS -lstdc++ -L/usr/local/lib -liconv"
 	LDFLAGS="$LDFLAGS $($LLVM_CONFIG --libs core native --system-libs)"
 	;;
 Haiku)
-	CXXFLAGS="$CXXFLAGS $($LLVM_CONFIG --cxxflags --ldflags) -I/system/develop/headers/private/shared -I/system/develop/headers/private/kernel"
-	LDFLAGS="$LDFLAGS -liconv"
+	CXXFLAGS="$CXXFLAGS -D_GNU_SOURCE $($LLVM_CONFIG --cxxflags --ldflags) -I/system/develop/headers/private/shared -I/system/develop/headers/private/kernel"
+	LDFLAGS="$LDFLAGS -lstdc++ -liconv"
 	LDFLAGS="$LDFLAGS $($LLVM_CONFIG --libs core native --system-libs)"
 	;;
 *)
@@ -122,7 +139,7 @@ build_odin() {
 		EXTRAFLAGS="-O3 -g"
 		;;
 	release-native)
-		if [ "$OS_ARCH" = "arm64" ]; then
+		if [ "$OS_ARCH" = "arm64" ] || [ "$OS_ARCH" = "aarch64" ]; then
 			# Use preferred flag for Arm (ie arm64 / aarch64 / etc)
 			EXTRAFLAGS="-O3 -mcpu=native"
 		else
@@ -150,17 +167,26 @@ run_demo() {
 if [ $# -eq 0 ]; then
 	build_odin debug
 	run_demo
+
+	: ${PROGRAM:=$0}
+	printf "\nDebug compiler built. Note: run \"$PROGRAM release\" or \"$PROGRAM release-native\" if you want a faster, release mode compiler.\n"
 elif [ $# -eq 1 ]; then
 	case $1 in
 	report)
-		[ ! -f "./odin" ] && build_odin debug
+		if [ ! -f "./odin" ]; then
+			build_odin debug
+			run_demo
+		fi
 		./odin report
+		;;
+	debug)
+		build_odin debug
+		run_demo
 		;;
 	*)
 		build_odin $1
 		;;
 	esac
-	run_demo
 else
 	error "Too many arguments!"
 fi

@@ -5,7 +5,7 @@ package libc
 when ODIN_OS == .Windows {
 	foreign import libc "system:libucrt.lib"
 } else when ODIN_OS == .Darwin {
-	foreign import libc "system:System.framework"
+	foreign import libc "system:System"
 } else {
 	foreign import libc "system:c"
 }
@@ -14,7 +14,7 @@ when ODIN_OS == .Windows {
 	wctrans_t :: distinct wchar_t
 	wctype_t  :: distinct ushort
 
-} else when ODIN_OS == .Linux {
+} else when ODIN_OS == .Linux || ODIN_OS == .JS {
 	wctrans_t :: distinct intptr_t
 	wctype_t  :: distinct ulong
 

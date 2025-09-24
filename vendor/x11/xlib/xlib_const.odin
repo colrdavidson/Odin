@@ -1,4 +1,4 @@
-//+build linux, freebsd, openbsd
+#+build linux, freebsd, openbsd
 package xlib
 
 /* ----  X11/extensions/XKB.h ---------------------------------------------------------*/
@@ -71,6 +71,11 @@ XkbAllEventsMask :: XkbEventMask {
 	.AccessXNotify,
 	.ExtensionDeviceNotify,
 }
+
+/* ----  X11/extensions/XI2.h ---------------------------------------------------------*/
+
+XIAllDevices :: 0
+XIAllMasterDevices :: 1
 
 
 /* ----  X11/Xlib.h ---------------------------------------------------------*/

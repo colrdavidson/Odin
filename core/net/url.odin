@@ -8,12 +8,14 @@ package net
 	Copyright 2022 Tetralux        <tetraluxonpc@gmail.com>
 	Copyright 2022 Colin Davidson  <colrdavidson@gmail.com>
 	Copyright 2022 Jeroen van Rijn <nom@duclavier.com>.
+	Copyright 2024 Feoramund       <rune@swevencraft.org>.
 	Made available under Odin's BSD-3 license.
 
 	List of contributors:
 		Tetralux:        Initial implementation
 		Colin Davidson:  Linux platform code, OSX platform code, Odin-native DNS resolver
 		Jeroen van Rijn: Cross platform unification, code style, documentation
+		Feoramund:       FreeBSD platform code
 */
 
 import "core:strings"
@@ -123,7 +125,7 @@ percent_encode :: proc(s: string, allocator := context.allocator) -> string {
 			bytes, n := utf8.encode_rune(ch)
 			for byte in bytes[:n] {
 				buf: [2]u8 = ---
-				t := strconv.append_int(buf[:], i64(byte), 16)
+				t := strconv.write_int(buf[:], i64(byte), 16)
 				strings.write_rune(&b, '%')
 				strings.write_string(&b, t)
 			}

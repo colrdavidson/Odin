@@ -1,5 +1,5 @@
 // package csv reads and writes comma-separated values (CSV) files.
-// This package supports the format described in RFC 4180 <https://tools.ietf.org/html/rfc4180.html>
+// This package supports the format described in [[ RFC 4180; https://tools.ietf.org/html/rfc4180.html ]]
 package encoding_csv
 
 import "core:bufio"
@@ -130,7 +130,7 @@ reader_destroy :: proc(r: ^Reader) {
 	for record, row_idx in csv.iterator_next(&r) { ... }
 
 	TIP: If you process the results within the loop and don't need to own the results,
-	you can set the Reader's `reuse_record` and `reuse_record_reuse_record_buffer` to true;
+	you can set the Reader's `reuse_record` and `reuse_record_buffer` to true;
 	you won't need to delete the record or its fields.
 */
 iterator_next :: proc(r: ^Reader) -> (record: []string, idx: int, err: Error, more: bool) {

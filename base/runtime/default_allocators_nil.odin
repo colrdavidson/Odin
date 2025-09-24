@@ -1,8 +1,8 @@
 package runtime
 
 nil_allocator_proc :: proc(allocator_data: rawptr, mode: Allocator_Mode,
-                               size, alignment: int,
-                               old_memory: rawptr, old_size: int, loc := #caller_location) -> ([]byte, Allocator_Error) {
+                           size, alignment: int,
+                           old_memory: rawptr, old_size: int, loc := #caller_location) -> ([]byte, Allocator_Error) {
 	switch mode {
 	case .Alloc, .Alloc_Non_Zeroed:
 		return nil, .Out_Of_Memory
@@ -23,7 +23,8 @@ nil_allocator_proc :: proc(allocator_data: rawptr, mode: Allocator_Mode,
 	return nil, .None
 }
 
-nil_allocator :: proc() -> Allocator {
+@(require_results)
+nil_allocator :: proc "contextless" () -> Allocator {
 	return Allocator{
 		procedure = nil_allocator_proc,
 		data = nil,
@@ -72,6 +73,7 @@ panic_allocator_proc :: proc(allocator_data: rawptr, mode: Allocator_Mode,
 	return nil, nil
 }
 
+@(require_results)
 panic_allocator :: proc() -> Allocator {
 	return Allocator{
 		procedure = panic_allocator_proc,

@@ -1,9 +1,10 @@
-//+build darwin
+#+build darwin
 package darwin
 
 import "core:c"
 
-foreign import system "system:System.framework"
+@(export)
+foreign import system "system:System"
 
 Bool :: b8
 

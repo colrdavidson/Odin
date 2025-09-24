@@ -16,9 +16,9 @@ Generator_Query_Info :: runtime.Random_Generator_Query_Info
 Default_Random_State :: runtime.Default_Random_State
 default_random_generator :: runtime.default_random_generator
 
+@(require_results)
 create :: proc(seed: u64) -> (state: Default_Random_State) {
 	seed := seed
-	runtime.default_random_generator(&state)
 	runtime.default_random_generator_proc(&state, .Reset, ([^]byte)(&seed)[:size_of(seed)])
 	return
 }
@@ -33,31 +33,7 @@ Example:
 	import "core:math/rand"
 	import "core:fmt"
 
-	set_global_seed_example :: proc() {
-		rand.set_global_seed(1)
-		fmt.println(rand.uint64())
-	}
-
-Possible Output:
-
-	10
-*/
-@(deprecated="Prefer `rand.reset`")
-set_global_seed :: proc(seed: u64) {
-	runtime.random_generator_reset_u64(context.random_generator, seed)
-}
-
-/*
-Reset the seed used by the context.random_generator.
-
-Inputs:
-- seed: The seed value
-
-Example:
-	import "core:math/rand"
-	import "core:fmt"
-
-	set_global_seed_example :: proc() {
+	reset_example :: proc() {
 		rand.reset(1)
 		fmt.println(rand.uint64())
 	}
@@ -80,13 +56,6 @@ query_info :: proc(gen := context.random_generator) -> Generator_Query_Info {
 }
 
 
-@(private)
-_random_u64 :: proc(gen := context.random_generator) -> (res: u64) {
-	ok := runtime.random_generator_read_ptr(gen, &res, size_of(res))
-	assert(ok, "uninitialized gen/context.random_generator")
-	return
-}
-
 /*
 Generates a random 32 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
 
@@ -108,7 +77,7 @@ Possible Output:
 
 */
 @(require_results)
-uint32 :: proc(gen := context.random_generator) -> (val: u32) { return u32(_random_u64(gen)) }
+uint32 :: proc(gen := context.random_generator) -> (val: u32) {return u32(uint64(gen))}
 
 /*
 Generates a random 64 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
@@ -131,7 +100,11 @@ Possible Output:
 
 */
 @(require_results)
-uint64 :: proc(gen := context.random_generator) -> (val: u64) { return _random_u64(gen) }
+uint64 :: proc(gen := context.random_generator) -> (val: u64) {
+	ok := runtime.random_generator_read_ptr(gen, &val, size_of(val))
+	assert(ok, "uninitialized gen/context.random_generator")
+	return
+}
 
 /*
 Generates a random 128 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
@@ -155,13 +128,13 @@ Possible Output:
 */
 @(require_results)
 uint128 :: proc(gen := context.random_generator) -> (val: u128) {
-	a := u128(_random_u64(gen))
-	b := u128(_random_u64(gen))
+	a := u128(uint64(gen))
+	b := u128(uint64(gen))
 	return (a<<64) | b
 }
 
 /*
-Generates a random 31 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.  
+Generates a random 31 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
 The sign bit will always be set to 0, thus all generated numbers will be positive.
 
 Returns:
@@ -184,7 +157,7 @@ Possible Output:
 @(require_results) int31  :: proc(gen := context.random_generator) -> (val: i32)  { return i32(uint32(gen) << 1 >> 1) }
 
 /*
-Generates a random 63 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.  
+Generates a random 63 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
 The sign bit will always be set to 0, thus all generated numbers will be positive.
 
 Returns:
@@ -207,7 +180,7 @@ Possible Output:
 @(require_results) int63  :: proc(gen := context.random_generator) -> (val: i64)  { return i64(uint64(gen) << 1 >> 1) }
 
 /*
-Generates a random 127 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.  
+Generates a random 127 bit value using the provided random number generator. If no generator is provided the global random number generator will be used.
 The sign bit will always be set to 0, thus all generated numbers will be positive.
 
 Returns:
@@ -374,7 +347,7 @@ Example:
 Possible Output:
 
 	6
-	500
+	13
 
 */
 @(require_results)
@@ -456,7 +429,7 @@ Example:
 Possible Output:
 
 	15.312
-	673.130
+	273.15
 
 */
 @(require_results) float64_range :: proc(low, high: f64, gen := context.random_generator) -> (val: f64) {
@@ -491,7 +464,7 @@ Example:
 Possible Output:
 
 	15.312
-	673.130
+	273.15
 
 */
 @(require_results) float32_range :: proc(low, high: f32, gen := context.random_generator) -> (val: f32) {
@@ -504,8 +477,8 @@ Possible Output:
 }
 
 /*
-Fills a byte slice with random values using the provided random number generator. If no generator is provided the global random number generator will be used.  
-Due to floating point precision there is no guarantee if the upper and lower bounds are inclusive/exclusive with the exact floating point value.  
+Fills a byte slice with random values using the provided random number generator. If no generator is provided the global random number generator will be used.
+Due to floating point precision there is no guarantee if the upper and lower bounds are inclusive/exclusive with the exact floating point value.
 
 Inputs:
 - p: The byte slice to fill
@@ -532,22 +505,12 @@ Possible Output:
 */
 @(require_results)
 read :: proc(p: []byte, gen := context.random_generator) -> (n: int) {
-	pos := i8(0)
-	val := i64(0)
-	for n = 0; n < len(p); n += 1 {
-		if pos == 0 {
-			val = int63(gen)
-			pos = 7
-		}
-		p[n] = byte(val)
-		val >>= 8
-		pos -= 1
-	}
-	return
+	if !runtime.random_generator_read_bytes(gen, p) {return 0}
+	return len(p)
 }
 
 /*
-Creates a slice of `int` filled with random values using the provided random number generator. If no generator is provided the global random number generator will be used.  
+Creates a slice of `int` filled with random values using the provided random number generator. If no generator is provided the global random number generator will be used.
 
 *Allocates Using Provided Allocator*
 
@@ -590,7 +553,7 @@ perm :: proc(n: int, allocator := context.allocator, gen := context.random_gener
 }
 
 /*
-Randomizes the ordering of elements for the provided slice. If no generator is provided the global random number generator will be used.  
+Randomizes the ordering of elements for the provided slice. If no generator is provided the global random number generator will be used.
 
 Inputs:
 - array: The slice to randomize
@@ -631,7 +594,7 @@ shuffle :: proc(array: $T/[]$E, gen := context.random_generator) {
 }
 
 /*
-Returns a random element from the provided slice. If no generator is provided the global random number generator will be used.  
+Returns a random element from the provided slice. If no generator is provided the global random number generator will be used.
 
 Inputs:
 - array: The slice to choose an element from
@@ -670,20 +633,69 @@ choice :: proc(array: $T/[]$E, gen := context.random_generator) -> (res: E) {
 
 
 @(require_results)
-choice_enum :: proc($T: typeid, gen := context.random_generator) -> T
-	where
-		intrinsics.type_is_enum(T),
-		size_of(T) <= 8,
-		len(T) == cap(T) /* Only allow contiguous enum types */ \
-{
-	when intrinsics.type_is_unsigned(intrinsics.type_core_type(T)) &&
-	     u64(max(T)) > u64(max(i64)) {
-		i := uint64(gen) % u64(len(T))
-		i += u64(min(T))
-		return T(i)
+choice_enum :: proc($T: typeid, gen := context.random_generator) -> T where intrinsics.type_is_enum(T) {
+	when size_of(T) <= 8 && len(T) == cap(T) {
+		when intrinsics.type_is_unsigned(intrinsics.type_core_type(T)) &&
+			 u64(max(T)) > u64(max(i64)) {
+			i := uint64(gen) % u64(len(T))
+			i += u64(min(T))
+			return T(i)
+		} else {
+			i := int63_max(i64(len(T)), gen)
+			i += i64(min(T))
+			return T(i)
+		}
 	} else {
-		i := int63_max(i64(len(T)), gen)
-		i += i64(min(T))
-		return T(i)
+		values := runtime.type_info_base(type_info_of(T)).variant.(runtime.Type_Info_Enum).values
+		return T(choice(values))
 	}
+}
+
+/*
+Returns a random *set* bit from the provided `bit_set`.
+
+Inputs:
+- set: The `bit_set` to choose a random set bit from
+
+Returns:
+- res: The randomly selected bit, or the zero value if `ok` is `false`
+- ok:  Whether the bit_set was not empty and thus `res` is actually a random set bit
+
+Example:
+	import "core:math/rand"
+	import "core:fmt"
+
+	choice_bit_set_example :: proc() {
+		Flags :: enum {
+			A,
+			B = 10,
+			C,
+		}
+
+		fmt.println(rand.choice_bit_set(bit_set[Flags]{}))
+		fmt.println(rand.choice_bit_set(bit_set[Flags]{.B}))
+		fmt.println(rand.choice_bit_set(bit_set[Flags]{.B, .C}))
+		fmt.println(rand.choice_bit_set(bit_set[0..<15]{5, 1, 4}))
+	}
+
+Possible Output:
+	A false
+	B true
+	C true
+	5 true
+*/
+@(require_results)
+choice_bit_set :: proc(set: $T/bit_set[$E], gen := context.random_generator) -> (res: E, ok: bool) {
+	total_set := card(set)
+	if total_set == 0 {
+		return {}, false
+	}
+
+	core_set := transmute(intrinsics.type_bit_set_underlying_type(T))set
+
+	for target := int_max(total_set, gen); target > 0; target -= 1 {
+		core_set &= core_set - 1
+	}
+
+	return E(intrinsics.count_trailing_zeros(core_set)), true
 }

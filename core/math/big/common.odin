@@ -15,22 +15,11 @@ import "base:intrinsics"
 */
 
 /*
-	==========================    TUNABLES     ==========================
-
-	`initialize_constants` returns `#config(MUL_KARATSUBA_CUTOFF, _DEFAULT_MUL_KARATSUBA_CUTOFF)`
-	and we initialize this cutoff that way so that the procedure is used and called,
-	because it handles initializing the constants ONE, ZERO, MINUS_ONE, NAN and INF.
-
-	`initialize_constants` also replaces the other `_DEFAULT_*` cutoffs with custom compile-time values if so `#config`ured.
-
-*/
-
-/*
 	There is a bug with DLL globals. They don't get set.
 	To allow tests to run we add `-define:MATH_BIG_EXE=false` to hardcode the cutoffs for now.
 */
 when #config(MATH_BIG_EXE, true) {
-	MUL_KARATSUBA_CUTOFF := initialize_constants()
+	MUL_KARATSUBA_CUTOFF := _DEFAULT_MUL_KARATSUBA_CUTOFF
 	SQR_KARATSUBA_CUTOFF := _DEFAULT_SQR_KARATSUBA_CUTOFF
 	MUL_TOOM_CUTOFF      := _DEFAULT_MUL_TOOM_CUTOFF
 	SQR_TOOM_CUTOFF      := _DEFAULT_SQR_TOOM_CUTOFF
@@ -195,7 +184,7 @@ Error_String :: #sparse[Error]string{
 }
 
 Primality_Flag :: enum u8 {
- 	Blum_Blum_Shub = 0,  // Make prime congruent to 3 mod 4
+	Blum_Blum_Shub = 0,  // Make prime congruent to 3 mod 4
 	Safe           = 1,  // Make sure (p-1)/2 is prime as well (implies .Blum_Blum_Shub)
 	Second_MSB_On  = 3,  // Make the 2nd highest bit one
 }

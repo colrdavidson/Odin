@@ -1,4 +1,7 @@
 /*
+Example:
+	package main
+
 	import "base:runtime"
 	import "core:prof/spall"
 	import "core:sync"
@@ -15,6 +18,8 @@
 		defer spall.context_destroy(&spall_ctx)
 
 		buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
+		defer delete(buffer_backing)
+
 		spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
 		defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
 

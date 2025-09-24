@@ -1,13 +1,27 @@
 package testing
 
+/*
+	(c) Copyright 2024 Feoramund <rune@swevencraft.org>.
+	Made available under Odin's BSD-3 license.
+
+	List of contributors:
+		Ginger Bill: Initial implementation.
+		Feoramund:   Total rewrite.
+*/
+
 import "base:intrinsics"
 import "base:runtime"
-import pkg_log "core:log"
+import "core:log"
 import "core:reflect"
+import "core:sync"
 import "core:sync/chan"
 import "core:time"
+import "core:mem"
 
 _ :: reflect // alias reflect to nothing to force visibility for -vet
+_ :: mem     // in case TRACKING_MEMORY is not enabled
+
+MAX_EXPECTED_ASSERTIONS_PER_TEST :: 5
 
 // IMPORTANT NOTE: Compiler requires this layout
 Test_Signature :: proc(^T)
@@ -52,18 +66,8 @@ T :: struct {
 }
 
 
-@(deprecated="prefer `log.error`")
-error :: proc(t: ^T, args: ..any, loc := #caller_location) {
-	pkg_log.error(..args, location = loc)
-}
-
-@(deprecated="prefer `log.errorf`")
-errorf :: proc(t: ^T, format: string, args: ..any, loc := #caller_location) {
-	pkg_log.errorf(format, ..args, location = loc)
-}
-
 fail :: proc(t: ^T, loc := #caller_location) {
-	pkg_log.error("FAIL", location=loc)
+	log.error("FAIL", location=loc)
 }
 
 // fail_now will cause a test to immediately fail and abort, much in the same
@@ -75,9 +79,9 @@ fail :: proc(t: ^T, loc := #caller_location) {
 fail_now :: proc(t: ^T, msg := "", loc := #caller_location) -> ! {
 	t._fail_now_called = true
 	if msg != "" {
-		pkg_log.error("FAIL:", msg, location=loc)
+		log.error("FAIL:", msg, location=loc)
 	} else {
-		pkg_log.error("FAIL", location=loc)
+		log.error("FAIL", location=loc)
 	}
 	runtime.trap()
 }
@@ -85,17 +89,6 @@ fail_now :: proc(t: ^T, msg := "", loc := #caller_location) -> ! {
 failed :: proc(t: ^T) -> bool {
 	return t.error_count != 0
 }
-
-@(deprecated="prefer `log.info`")
-log :: proc(t: ^T, args: ..any, loc := #caller_location) {
-	pkg_log.info(..args, location = loc)
-}
-
-@(deprecated="prefer `log.infof`")
-logf :: proc(t: ^T, format: string, args: ..any, loc := #caller_location) {
-	pkg_log.infof(format, ..args, location = loc)
-}
-
 
 // cleanup registers a procedure and user_data, which will be called when the test, and all its subtests, complete.
 // Cleanup procedures will be called in LIFO (last added, first called) order.
@@ -114,32 +107,124 @@ cleanup :: proc(t: ^T, procedure: proc(rawptr), user_data: rawptr) {
 	append(&t.cleanups, Internal_Cleanup{procedure, user_data, context})
 }
 
-expect :: proc(t: ^T, ok: bool, msg: string = "", loc := #caller_location) -> bool {
+expect :: proc(t: ^T, ok: bool, msg := "", expr := #caller_expression(ok), loc := #caller_location) -> bool {
 	if !ok {
-		pkg_log.error(msg, location=loc)
+		if msg == "" {
+			log.errorf("expected %v to be true", expr, location=loc)
+		} else {
+			log.error(msg, location=loc)
+		}
 	}
 	return ok
 }
 
 expectf :: proc(t: ^T, ok: bool, format: string, args: ..any, loc := #caller_location) -> bool {
 	if !ok {
-		pkg_log.errorf(format, ..args, location=loc)
+		log.errorf(format, ..args, location=loc)
 	}
 	return ok
 }
 
-expect_value :: proc(t: ^T, value, expected: $T, loc := #caller_location) -> bool where intrinsics.type_is_comparable(T) {
+expect_value :: proc(t: ^T, value, expected: $T, loc := #caller_location, value_expr := #caller_expression(value)) -> bool where intrinsics.type_is_comparable(T) {
 	ok := value == expected || reflect.is_nil(value) && reflect.is_nil(expected)
 	if !ok {
-		pkg_log.errorf("expected %v, got %v", expected, value, location=loc)
+		log.errorf("expected %v to be %v, got %v", value_expr, expected, value, location=loc)
 	}
 	return ok
 }
 
+Memory_Verifier_Proc :: #type proc(t: ^T, ta: ^mem.Tracking_Allocator)
+
+expect_leaks :: proc(t: ^T, client_test: proc(t: ^T), verifier: Memory_Verifier_Proc) {
+	when TRACKING_MEMORY {
+		client_test(t)
+		ta := (^mem.Tracking_Allocator)(context.allocator.data)
+
+		sync.mutex_lock(&ta.mutex)
+		// The verifier can inspect this local tracking allocator.
+		// And then call `testing.expect_*` as makes sense for the client test.
+		verifier(t, ta)
+		sync.mutex_unlock(&ta.mutex)
+
+		clear(&ta.bad_free_array)
+		free_all(context.allocator)
+	}
+}
 
 set_fail_timeout :: proc(t: ^T, duration: time.Duration, loc := #caller_location) {
 	chan.send(t.channel, Event_Set_Fail_Timeout {
 		at_time = time.time_add(time.now(), duration),
 		location = loc,
 	})
+}
+
+/*
+Let the test runner know that it should expect an assertion failure from a
+specific location in the source code for this test.
+
+In the event that an assertion fails, a debug message will be logged with its
+exact message and location in a copyable format to make it convenient to write
+tests which use this API.
+
+This procedure may be called up to 5 times with different locations.
+
+This is a limitation for the sake of simplicity in the implementation, and you
+should consider breaking up your tests into smaller procedures if you need to
+check for asserts in more than 2 places.
+*/
+expect_assert_from :: proc(t: ^T, expected_place: runtime.Source_Code_Location, caller_loc := #caller_location) {
+	count := local_test_expected_failures.location_count
+	if count == MAX_EXPECTED_ASSERTIONS_PER_TEST {
+		panic("This test cannot handle that many expected assertions based on matching the location.", caller_loc)
+	}
+	local_test_expected_failures.locations[count] = expected_place
+	local_test_expected_failures.location_count += 1
+}
+
+/*
+Let the test runner know that it should expect an assertion failure with a
+specific message for this test.
+
+In the event that an assertion fails, a debug message will be logged with its
+exact message and location in a copyable format to make it convenient to write
+tests which use this API.
+
+This procedure may be called up to 5 times with different messages.
+
+This is a limitation for the sake of simplicity in the implementation, and you
+should consider breaking up your tests into smaller procedures if you need to
+check for more than a couple different assertion messages.
+*/
+expect_assert_message :: proc(t: ^T, expected_message: string, caller_loc := #caller_location) {
+	count := local_test_expected_failures.message_count
+	if count == MAX_EXPECTED_ASSERTIONS_PER_TEST {
+		panic("This test cannot handle that many expected assertions based on matching the message.", caller_loc)
+	}
+	local_test_expected_failures.messages[count] = expected_message
+	local_test_expected_failures.message_count += 1
+}
+
+expect_assert :: proc {
+	expect_assert_from,
+	expect_assert_message,
+}
+
+/*
+Let the test runner know that it should expect a signal to be raised within
+this test.
+
+This API is for advanced users, as arbitrary signals will not be caught; only
+the ones already handled by the test runner, such as
+
+- SIGINT,                           (interrupt)
+- SIGTERM,                          (polite termination)
+- SIGILL,                           (illegal instruction)
+- SIGFPE,                           (arithmetic error)
+- SIGSEGV, and                      (segmentation fault)
+- SIGTRAP (only on POSIX systems).  (trap / debug trap)
+
+Note that only one signal can be expected per test.
+*/
+expect_signal :: proc(t: ^T, #any_int sig: i32) {
+	local_test_expected_failures.signal = sig
 }

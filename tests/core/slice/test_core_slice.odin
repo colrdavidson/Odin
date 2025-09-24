@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package test_core_slice
 
 import "core:slice"
@@ -275,4 +276,69 @@ test_unique :: proc(t: ^testing.T) {
 		delete(original)
 		delete(expected)
 	}
+}
+
+@test
+test_compare_empty :: proc(t: ^testing.T) {
+	a := []int{}
+	b := []int{}
+	c: [dynamic]int = { 0 }
+	d: [dynamic]int = { 1 }
+	clear(&c)
+	clear(&d)
+	defer {
+		delete(c)
+		delete(d)
+	}
+
+	testing.expectf(t, len(a) == 0,
+		"Expected length of slice `a` to be zero")
+	testing.expectf(t, len(c) == 0,
+		"Expected length of dynamic array `c` to be zero")
+	testing.expectf(t, len(d) == 0,
+		"Expected length of dynamic array `d` to be zero")
+
+	testing.expectf(t, slice.equal(a, a),
+		"Expected empty slice to be equal to itself")
+	testing.expectf(t, slice.equal(a, b),
+		"Expected two different but empty stack-based slices to be equivalent")
+	testing.expectf(t, slice.equal(a, c[:]),
+		"Expected empty slice to be equal to slice of empty dynamic array")
+	testing.expectf(t, slice.equal(c[:], d[:]),
+		"Expected two separate empty slices of two dynamic arrays to be equal")
+}
+
+@test
+test_linear_search_reverse :: proc(t: ^testing.T) {
+	index: int
+	found: bool
+
+	s := []i32{0, 50, 50, 100}
+
+	index, found = slice.linear_search_reverse(s, 100)
+	testing.expect(t, found)
+	testing.expect_value(t, index, len(s) - 1)
+
+	index, found = slice.linear_search_reverse(s[len(s) - 1:], 100)
+	testing.expect(t, found)
+	testing.expect_value(t, index, 0)
+
+	index, found = slice.linear_search_reverse(s, 50)
+	testing.expect(t, found)
+	testing.expect_value(t, index, 2)
+
+	index, found = slice.linear_search_reverse(s, 0)
+	testing.expect(t, found)
+	testing.expect_value(t, index, 0)
+
+	index, found = slice.linear_search_reverse(s, -1)
+	testing.expect(t, !found)
+
+	less_than_80 :: proc(x: i32) -> bool {
+		return x < 80
+	}
+
+	index, found = slice.linear_search_reverse_proc(s, less_than_80)
+	testing.expect(t, found)
+	testing.expect_value(t, index, 2)
 }

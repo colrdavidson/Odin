@@ -12,18 +12,16 @@ Context_ECB :: struct {
 }
 
 // init_ecb initializes a Context_ECB with the provided key.
-init_ecb :: proc(ctx: ^Context_ECB, key: []byte, impl := Implementation.Hardware) {
+init_ecb :: proc(ctx: ^Context_ECB, key: []byte, impl := DEFAULT_IMPLEMENTATION) {
 	init_impl(&ctx._impl, key, impl)
 	ctx._is_initialized = true
 }
 
 // encrypt_ecb encrypts the BLOCK_SIZE buffer src, and writes the result to dst.
 encrypt_ecb :: proc(ctx: ^Context_ECB, dst, src: []byte) {
-	assert(ctx._is_initialized)
-
-	if len(dst) != BLOCK_SIZE || len(src) != BLOCK_SIZE {
-		panic("crypto/aes: invalid buffer size(s)")
-	}
+	ensure(ctx._is_initialized)
+	ensure(len(dst) == BLOCK_SIZE, "crypto/aes: invalid dst size")
+	ensure(len(dst) == BLOCK_SIZE, "crypto/aes: invalid src size")
 
 	switch &impl in ctx._impl {
 	case ct64.Context:
@@ -35,11 +33,9 @@ encrypt_ecb :: proc(ctx: ^Context_ECB, dst, src: []byte) {
 
 // decrypt_ecb decrypts the BLOCK_SIZE buffer src, and writes the result to dst.
 decrypt_ecb :: proc(ctx: ^Context_ECB, dst, src: []byte) {
-	assert(ctx._is_initialized)
-
-	if len(dst) != BLOCK_SIZE || len(src) != BLOCK_SIZE {
-		panic("crypto/aes: invalid buffer size(s)")
-	}
+	ensure(ctx._is_initialized)
+	ensure(len(dst) == BLOCK_SIZE, "crypto/aes: invalid dst size")
+	ensure(len(dst) == BLOCK_SIZE, "crypto/aes: invalid src size")
 
 	switch &impl in ctx._impl {
 	case ct64.Context:

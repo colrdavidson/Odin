@@ -448,6 +448,44 @@ gb_internal void semaphore_wait(Semaphore *s) {
 	}
 #endif
 
+static const int RWLOCK_WRITER   = 1<<0;
+static const int RWLOCK_UPGRADED = 1<<1;
+static const int RWLOCK_READER   = 1<<2;
+struct RWSpinLock {
+	Futex bits;
+};
+
+void rwlock_release_write(RWSpinLock *l) {
+	l->bits.fetch_and(~(RWLOCK_WRITER | RWLOCK_UPGRADED), std::memory_order_release);
+	futex_signal(&l->bits);
+}
+
+bool rwlock_try_acquire_upgrade(RWSpinLock *l) {
+	int value = l->bits.fetch_or(RWLOCK_UPGRADED, std::memory_order_acquire);
+	return (value & (RWLOCK_UPGRADED | RWLOCK_WRITER)) == 0;
+}
+
+void rwlock_acquire_upgrade(RWSpinLock *l) {
+	while (!rwlock_try_acquire_upgrade(l)) {
+		futex_wait(&l->bits, RWLOCK_UPGRADED | RWLOCK_WRITER);
+	}
+}
+void rwlock_release_upgrade(RWSpinLock *l) {
+	l->bits.fetch_add(-RWLOCK_UPGRADED, std::memory_order_acq_rel);
+}
+
+bool rwlock_try_release_upgrade_and_acquire_write(RWSpinLock *l) {
+	int expect = RWLOCK_UPGRADED;
+	return l->bits.compare_exchange_strong(expect, RWLOCK_WRITER, std::memory_order_acq_rel);
+}
+
+void rwlock_release_upgrade_and_acquire_write(RWSpinLock *l) {
+	while (!rwlock_try_release_upgrade_and_acquire_write(l)) {
+		futex_wait(&l->bits, RWLOCK_UPGRADED);
+	}
+}
+
+
 struct Parker {
 	Futex state;
 };
@@ -529,6 +567,9 @@ gb_internal gb_inline void yield_thread(void) {
 	_mm_pause();
 #elif defined(GB_CPU_ARM)
 	__asm__ volatile ("yield" : : : "memory");
+#elif defined(GB_CPU_RISCV)
+	// I guess?
+	__asm__ volatile ("nop" : : : "memory");
 #else
 #error Unknown architecture
 #endif
@@ -753,7 +794,7 @@ gb_internal void futex_signal(Futex *f) {
 
 			perror("Futex wake");
 			GB_PANIC("futex wake fail");
-		} else if (ret == 1) {
+		} else {
 			return;
 		}
 	}
@@ -770,7 +811,7 @@ gb_internal void futex_broadcast(Futex *f) {
 
 			perror("Futex wake");
 			GB_PANIC("futex wake fail");
-		} else if (ret == 1) {
+		} else {
 			return;
 		}
 	}
@@ -780,7 +821,7 @@ gb_internal void futex_wait(Futex *f, Footex val) {
 	for (;;) {
 		int ret = futex((volatile uint32_t *)f, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, val, NULL, NULL);
 		if (ret == -1) {
-			if (*f != val) {
+			if (errno == EAGAIN) {
 				return;
 			}
 
@@ -839,8 +880,16 @@ gb_internal void futex_signal(Futex *f) {
 		}
 	} else {
 	#endif
+	// UL_COMPARE_AND_WAIT_SHARED is only available on macOS 10.15+
+	int WAIT_FLAG;
+	if (__builtin_available(macOS 10.15, *)) {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT_SHARED;
+	} else {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT;
+	}
+
 	for (;;) {
-		int ret = __ulock_wake(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, f, 0);
+		int ret = __ulock_wake(WAIT_FLAG | ULF_NO_ERRNO, f, 0);
 		if (ret >= 0) {
 			return;
 		}
@@ -875,9 +924,17 @@ gb_internal void futex_broadcast(Futex *f) {
 		}
 	} else {
 	#endif
+	// UL_COMPARE_AND_WAIT_SHARED is only available on macOS 10.15+
+	int WAIT_FLAG;
+	if (__builtin_available(macOS 10.15, *)) {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT_SHARED;
+	} else {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT;
+	}
+
 	for (;;) {
 		enum { ULF_WAKE_ALL = 0x00000100 };
-		int ret = __ulock_wake(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO | ULF_WAKE_ALL, f, 0);
+		int ret = __ulock_wake(WAIT_FLAG | ULF_NO_ERRNO | ULF_WAKE_ALL, f, 0);
 		if (ret == 0) {
 			return;
 		}
@@ -915,8 +972,16 @@ gb_internal void futex_wait(Futex *f, Footex val) {
 		}
 	} else {
 	#endif
+	// UL_COMPARE_AND_WAIT_SHARED is only available on macOS 10.15+
+	int WAIT_FLAG;
+	if (__builtin_available(macOS 10.15, *)) {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT_SHARED;
+	} else {
+		WAIT_FLAG = UL_COMPARE_AND_WAIT;
+	}
+
 	for (;;) {
-		int ret = __ulock_wait(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, f, val, 0);
+		int ret = __ulock_wait(WAIT_FLAG | ULF_NO_ERRNO, f, val, 0);
 		if (ret >= 0) {
 			if (*f != val) {
 				return;

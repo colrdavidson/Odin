@@ -37,22 +37,52 @@ to_bytes :: proc "contextless" (s: []$T) -> []byte {
 }
 
 /*
-	Turn a slice of one type, into a slice of another type.
+	Turns a byte slice into a type.
+*/
+@(require_results)
+to_type :: proc(buf: []u8, $T: typeid) -> (T, bool) #optional_ok {
+	if len(buf) < size_of(T) {
+		return {}, false
+	}
+	return intrinsics.unaligned_load((^T)(raw_data(buf))), true
+}
 
-	Only converts the type and length of the slice itself.
-	The length is rounded down to the nearest whole number of items.
+/*
+Turn a slice of one type, into a slice of another type.
 
-	```
-	large_items := []i64{1, 2, 3, 4}
-	small_items := slice.reinterpret([]i32, large_items)
-	assert(len(small_items) == 8)
-	```
-	```
-	small_items := []byte{1, 0, 0, 0, 0, 0, 0, 0,
-						  2, 0, 0, 0}
-	large_items := slice.reinterpret([]i64, small_items)
-	assert(len(large_items) == 1) // only enough bytes to make 1 x i64; two would need at least 8 bytes.
-	```
+Only converts the type and length of the slice itself.
+The length is rounded down to the nearest whole number of items.
+
+Example:
+
+	import "core:fmt"
+	import "core:slice"
+
+	i64s_as_i32s :: proc() {
+		large_items := []i64{1, 2, 3, 4}
+		small_items := slice.reinterpret([]i32, large_items)
+		assert(len(small_items) == 8)
+		fmt.println(large_items, "->", small_items)
+	}
+
+	bytes_as_i64s :: proc() {
+		small_items := [12]byte{}
+		small_items[0] = 1
+		small_items[8] = 2
+		large_items := slice.reinterpret([]i64, small_items[:])
+		assert(len(large_items) == 1) // only enough bytes to make 1 x i64; two would need at least 8 bytes.
+		fmt.println(small_items, "->", large_items)
+	}
+
+	reinterpret_example :: proc() {
+		i64s_as_i32s()
+		bytes_as_i64s()
+	}
+
+Output:
+	[1, 2, 3, 4] -> [1, 0, 2, 0, 3, 0, 4, 0]
+	[1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0] -> [1]
+
 */
 @(require_results)
 reinterpret :: proc "contextless" ($T: typeid/[]$U, s: []$V) -> []U {
@@ -96,9 +126,37 @@ contains :: proc(array: $T/[]$E, value: E) -> bool where intrinsics.type_is_comp
 	return found
 }
 
+/*
+Searches the given slice for the given element in O(n) time.
+
+If you need a custom search condition, see `linear_search_proc`
+
+Inputs:
+- array: The slice to search in.
+- key: The element to search for.
+
+Returns:
+- index: The index `i`, such that `array[i]` is the first occurrence of `key` in `array`, or -1 if `key` is not present in `array`.
+
+Example:
+	index: int
+	found: bool
+
+	a := []i32{10, 10, 10, 20}
+
+	index, found = linear_search_reverse(a, 10)
+	assert(index == 0 && found == true)
+
+	index, found = linear_search_reverse(a, 30)
+	assert(index == -1 && found == false)
+
+	// Note that `index == 1`, since it is relative to `a[2:]`
+	index, found = linear_search_reverse(a[2:], 20)
+	assert(index == 1 && found == true)
+*/
 @(require_results)
 linear_search :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
-	where intrinsics.type_is_comparable(T) #no_bounds_check {
+	where intrinsics.type_is_comparable(T) {
 	for x, i in array {
 		if x == key {
 			return i, true
@@ -107,8 +165,18 @@ linear_search :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
 	return -1, false
 }
 
+/*
+Searches the given slice for the first element satisfying predicate `f` in O(n) time.
+
+Inputs:
+- array: The slice to search in.
+- f: The search condition.
+
+Returns:
+- index: The index `i`, such that `array[i]` is the first `x` in `array` for which `f(x) == true`, or -1 if such `x` does not exist.
+*/
 @(require_results)
-linear_search_proc :: proc(array: $A/[]$T, f: proc(T) -> bool) -> (index: int, found: bool) #no_bounds_check {
+linear_search_proc :: proc(array: $A/[]$T, f: proc(T) -> bool) -> (index: int, found: bool) {
 	for x, i in array {
 		if f(x) {
 			return i, true
@@ -118,22 +186,88 @@ linear_search_proc :: proc(array: $A/[]$T, f: proc(T) -> bool) -> (index: int, f
 }
 
 /*
-	Binary search searches the given slice for the given element.
-	If the slice is not sorted, the returned index is unspecified and meaningless.
+Searches the given slice for the given element in O(n) time, starting from the
+slice end.
 
-	If the value is found then the returned int is the index of the matching element.
-	If there are multiple matches, then any one of the matches could be returned.
+If you need a custom search condition, see `linear_search_reverse_proc`
 
-	If the value is not found then the returned int is the index where a matching
-	element could be inserted while maintaining sorted order.
+Inputs:
+- array: The slice to search in.
+- key: The element to search for.
 
-	# Examples
+Returns:
+- index: The index `i`, such that `array[i]` is the last occurrence of `key` in `array`, or -1 if `key` is not present in `array`.
 
+Example:
+	index: int
+	found: bool
+
+	a := []i32{10, 10, 10, 20}
+
+	index, found = linear_search_reverse(a, 20)
+	assert(index == 3 && found == true)
+
+	index, found = linear_search_reverse(a, 10)
+	assert(index == 2 && found == true)
+
+	index, found = linear_search_reverse(a, 30)
+	assert(index == -1 && found == false)
+
+	// Note that `index == 1`, since it is relative to `a[2:]`
+	index, found = linear_search_reverse(a[2:], 20)
+	assert(index == 1 && found == true)
+*/
+@(require_results)
+linear_search_reverse :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
+	where intrinsics.type_is_comparable(T) {
+	#reverse for x, i in array {
+		if x == key {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+/*
+Searches the given slice for the last element satisfying predicate `f` in O(n)
+time, starting from the slice end.
+
+Inputs:
+- array: The slice to search in.
+- f: The search condition.
+
+Returns:
+- index: The index `i`, such that `array[i]` is the last `x` in `array` for which `f(x) == true`, or -1 if such `x` does not exist.
+*/
+@(require_results)
+linear_search_reverse_proc :: proc(array: $A/[]$T, f: proc(T) -> bool) -> (index: int, found: bool) {
+	#reverse for x, i in array {
+		if f(x) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+/*
+Searches the given slice for the given element.
+If the slice is not sorted, the returned index is unspecified and meaningless.
+
+If the value is found then the returned int is the index of the matching element.
+If there are multiple matches, then any one of the matches could be returned.
+
+If the value is not found then the returned int is the index where a matching
+element could be inserted while maintaining sorted order.
+
+For slices of more complex types see: `binary_search_by`
+
+Example:
+	/*
 	Looks up a series of four elements. The first is found, with a
 	uniquely determined position; the second and third are not
 	found; the fourth could match any position in `[1, 4]`.
+	*/
 
-	```
 	index: int
 	found: bool
 
@@ -150,9 +284,6 @@ linear_search_proc :: proc(array: $A/[]$T, f: proc(T) -> bool) -> (index: int, f
 
 	index, found = slice.binary_search(s, 1)
 	assert(index >= 1 && index <= 4 && found == true)
-	```
-
-	For slices of more complex types see: binary_search_by
 */
 @(require_results)
 binary_search :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
@@ -160,8 +291,26 @@ binary_search :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
 	return binary_search_by(array, key, cmp_proc(T))
 }
 
+/*
+Searches the given slice for the given element.
+If the slice is not sorted, the returned index is unspecified and meaningless.
+
+If the value is found then the returned int is the index of the matching element.
+If there are multiple matches, then any one of the matches could be returned.
+
+If the value is not found then the returned int is the index where a matching
+element could be inserted while maintaining sorted order.
+
+The array elements and key may be different types. This allows the filter procedure
+to compare keys against a slice of structs, one struct value at a time.
+
+Returns:
+- index: int
+- found: bool
+
+*/
 @(require_results)
-binary_search_by :: proc(array: $A/[]$T, key: T, f: proc(T, T) -> Ordering) -> (index: int, found: bool) #no_bounds_check {
+binary_search_by :: proc(array: $A/[]$T, key: $K, f: proc(T, K) -> Ordering) -> (index: int, found: bool) #no_bounds_check {
 	n := len(array)
 	left, right := 0, n
 	for left < right {
@@ -173,8 +322,6 @@ binary_search_by :: proc(array: $A/[]$T, key: T, f: proc(T, T) -> Ordering) -> (
 			right = mid
 		}
 	}
-	// left == right
-	// f(array[left-1], key) == .Less (if left > 0)
 	return left, left < n && f(array[left], key) == .Equal
 }
 
@@ -184,6 +331,17 @@ equal :: proc(a, b: $T/[]$E) -> bool where intrinsics.type_is_comparable(E) #no_
 		return false
 	}
 	when intrinsics.type_is_simple_compare(E) {
+		if len(a) == 0 {
+			// Empty slices are always equivalent to each other.
+			//
+			// This check is here in the event that a slice with a `data` of
+			// nil is compared against a slice with a non-nil `data` but a
+			// length of zero.
+			//
+			// In that case, `memory_compare` would return -1 or +1 because one
+			// of the pointers is nil.
+			return true
+		}
 		return runtime.memory_compare(raw_data(a), raw_data(b), len(a)*size_of(E)) == 0
 	} else {
 		for i in 0..<len(a) {
@@ -229,6 +387,25 @@ has_prefix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_c
 	return false
 }
 
+/*
+	return the suffix length common between slices `a` and `b`.
+
+	slice.suffix_length([]u8{1, 2, 3, 4}, []u8{1, 2, 3, 4}) -> 4
+	slice.suffix_length([]u8{1, 2, 3, 4}, []u8{3, 4}) -> 2
+	slice.suffix_length([]u8{1, 2, 3, 4}, []u8{1}) -> 0
+	slice.suffix_length([]u8{1, 2, 3, 4}, []u8{1, 3, 5}) -> 0
+	slice.suffix_length([]u8{3, 4, 5}, []u8{3, 5}) -> 1
+*/
+@(require_results)
+suffix_length :: proc(a, b: $T/[]$E) -> (n: int) where intrinsics.type_is_comparable(E) {
+	len_a, len_b := len(a), len(b)
+	_len := builtin.min(len_a, len_b)
+
+	#no_bounds_check for i := 1; i <= _len && a[len_a - i] == b[len_b - i]; i += 1 {
+		n += 1
+	}
+	return
+}
 
 @(require_results)
 has_suffix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_comparable(E) {
@@ -330,6 +507,12 @@ length :: proc(a: $T/[]$E) -> int {
 @(require_results)
 is_empty :: proc(a: $T/[]$E) -> bool {
 	return len(a) == 0
+}
+
+// Gets the byte size of the backing data
+@(require_results)
+size :: proc "contextless" (a: $T/[]$E) -> int {
+	return len(a) * size_of(E)
 }
 
 
@@ -734,8 +917,7 @@ bitset_to_enum_slice_with_buffer :: proc(buf: []$E, bs: $T) -> (slice: []E) wher
 //    sl := slice.bitset_to_enum_slice(bs)
 @(require_results)
 bitset_to_enum_slice_with_make :: proc(bs: $T, $E: typeid, allocator := context.allocator) -> (slice: []E) where intrinsics.type_is_enum(E), intrinsics.type_bit_set_elem_type(T) == E {
-	ones := intrinsics.count_ones(transmute(E)bs)
-	buf  := make([]E, int(ones), allocator)
+	buf := make([]E, card(bs), allocator)
 	return bitset_to_enum_slice(buf, bs)
 }
 

@@ -59,7 +59,7 @@ write_encoded_rune :: proc(f: ^File, r: rune) -> (n: int, err: Error) {
 		if r < 32 {
 			if wrap(write_string(f, "\\x"), &n, &err) { return }
 			b: [2]byte
-			s := strconv.append_bits(b[:], u64(r), 16, true, 64, strconv.digits, nil)
+			s := strconv.write_bits(b[:], u64(r), 16, true, 64, strconv.digits, nil)
 			switch len(s) {
 			case 0: if wrap(write_string(f, "00"), &n, &err) { return }
 			case 1: if wrap(write_rune(f, '0'), &n, &err)    { return }
@@ -119,23 +119,18 @@ read_entire_file_from_path :: proc(name: string, allocator: runtime.Allocator) -
 @(require_results)
 read_entire_file_from_file :: proc(f: ^File, allocator: runtime.Allocator) -> (data: []byte, err: Error) {
 	size: int
-	has_size := true
+	has_size := false
 	if size64, serr := file_size(f); serr == nil {
-		if i64(int(size64)) != size64 {
+		if i64(int(size64)) == size64 {
+			has_size = true
 			size = int(size64)
 		}
-	} else if serr == .No_Size {
-		has_size = false
-	} else {
-		return
 	}
-	size += 1 // for EOF
 
-	// TODO(bill): Is this correct logic?
-	if has_size {
+	if has_size && size > 0 {
 		total: int
 		data = make([]byte, size, allocator) or_return
-		for {
+		for total < len(data) {
 			n: int
 			n, err = read(f, data[total:])
 			total += n
@@ -144,18 +139,19 @@ read_entire_file_from_file :: proc(f: ^File, allocator: runtime.Allocator) -> (d
 					err = nil
 				}
 				data = data[:total]
-				return
+				break
 			}
 		}
+		return
 	} else {
 		buffer: [1024]u8
 		out_buffer := make([dynamic]u8, 0, 0, allocator)
 		total := 0
 		for {
-			n: int = ---
+			n: int
 			n, err = read(f, buffer[:])
 			total += n
-			append_elems(&out_buffer, ..buffer[:total])
+			append_elems(&out_buffer, ..buffer[:n]) or_return
 			if err != nil {
 				if err == .EOF || err == .Broken_Pipe {
 					err = nil
@@ -168,7 +164,7 @@ read_entire_file_from_file :: proc(f: ^File, allocator: runtime.Allocator) -> (d
 }
 
 @(require_results)
-write_entire_file :: proc(name: string, data: []byte, perm: int, truncate := true) -> Error {
+write_entire_file :: proc(name: string, data: []byte, perm: int = 0o644, truncate := true) -> Error {
 	flags := O_WRONLY|O_CREATE
 	if truncate {
 		flags |= O_TRUNC

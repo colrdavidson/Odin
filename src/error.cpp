@@ -86,7 +86,7 @@ gb_internal char *token_pos_to_string(TokenPos const &pos);
 gb_internal bool set_file_path_string(i32 index, String const &path) {
 	bool ok = false;
 	GB_ASSERT(index >= 0);
-	mutex_lock(&global_error_collector.path_mutex);
+	// mutex_lock(&global_error_collector.path_mutex);
 	mutex_lock(&global_files_mutex);
 
 	if (index >= global_file_path_strings.count) {
@@ -99,14 +99,14 @@ gb_internal bool set_file_path_string(i32 index, String const &path) {
 	}
 
 	mutex_unlock(&global_files_mutex);
-	mutex_unlock(&global_error_collector.path_mutex);
+	// mutex_unlock(&global_error_collector.path_mutex);
 	return ok;
 }
 
 gb_internal bool thread_safe_set_ast_file_from_id(i32 index, AstFile *file) {
 	bool ok = false;
 	GB_ASSERT(index >= 0);
-	mutex_lock(&global_error_collector.path_mutex);
+	// mutex_lock(&global_error_collector.path_mutex);
 	mutex_lock(&global_files_mutex);
 
 	if (index >= global_files.count) {
@@ -118,13 +118,13 @@ gb_internal bool thread_safe_set_ast_file_from_id(i32 index, AstFile *file) {
 		ok = true;
 	}
 	mutex_unlock(&global_files_mutex);
-	mutex_unlock(&global_error_collector.path_mutex);
+	// mutex_unlock(&global_error_collector.path_mutex);
 	return ok;
 }
 
 gb_internal String get_file_path_string(i32 index) {
 	GB_ASSERT(index >= 0);
-	mutex_lock(&global_error_collector.path_mutex);
+	// mutex_lock(&global_error_collector.path_mutex);
 	mutex_lock(&global_files_mutex);
 
 	String path = {};
@@ -133,13 +133,13 @@ gb_internal String get_file_path_string(i32 index) {
 	}
 
 	mutex_unlock(&global_files_mutex);
-	mutex_unlock(&global_error_collector.path_mutex);
+	// mutex_unlock(&global_error_collector.path_mutex);
 	return path;
 }
 
 gb_internal AstFile *thread_safe_get_ast_file_from_id(i32 index) {
 	GB_ASSERT(index >= 0);
-	mutex_lock(&global_error_collector.path_mutex);
+	// mutex_lock(&global_error_collector.path_mutex);
 	mutex_lock(&global_files_mutex);
 
 	AstFile *file = nullptr;
@@ -148,7 +148,18 @@ gb_internal AstFile *thread_safe_get_ast_file_from_id(i32 index) {
 	}
 
 	mutex_unlock(&global_files_mutex);
-	mutex_unlock(&global_error_collector.path_mutex);
+	// mutex_unlock(&global_error_collector.path_mutex);
+	return file;
+}
+
+
+// use AFTER PARSER
+gb_internal AstFile *thread_unsafe_get_ast_file_from_id(i32 index) {
+	GB_ASSERT(index >= 0);
+	AstFile *file = nullptr;
+	if (index < global_files.count) {
+		file = global_files[index];
+	}
 	return file;
 }
 
@@ -818,6 +829,35 @@ gb_internal int error_value_cmp(void const *a, void const *b) {
 	ErrorValue *x = cast(ErrorValue *)a;
 	ErrorValue *y = cast(ErrorValue *)b;
 	return token_pos_cmp(x->pos, y->pos);
+}
+
+gb_global String error_article_table[][2] = {
+	{str_lit("a "),  str_lit("bit_set literal")},
+	{str_lit("a "),  str_lit("constant declaration")},
+	{str_lit("a "),  str_lit("dynamic array literal")},
+	{str_lit("a "),  str_lit("map index")},
+	{str_lit("a "),  str_lit("map literal")},
+	{str_lit("a "),  str_lit("matrix literal")},
+	{str_lit("a "),  str_lit("polymorphic type argument")},
+	{str_lit("a "),  str_lit("procedure argument")},
+	{str_lit("a "),  str_lit("simd vector literal")},
+	{str_lit("a "),  str_lit("slice literal")},
+	{str_lit("a "),  str_lit("structure literal")},
+	{str_lit("a "),  str_lit("variable declaration")},
+	{str_lit("an "), str_lit("'any' literal")},
+	{str_lit("an "), str_lit("array literal")},
+	{str_lit("an "), str_lit("enumerated array literal")},
+
+};
+
+// Returns definite or indefinite article matching `context_name`, or "" if not found.
+gb_internal String error_article(String context_name) {
+	for (int i = 0; i < gb_count_of(error_article_table); i += 1) {
+		if (context_name == error_article_table[i][1]) {
+			return error_article_table[i][0];
+		}
+	}
+	return str_lit("");
 }
 
 gb_internal bool errors_already_printed = false;

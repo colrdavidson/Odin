@@ -1,5 +1,5 @@
+#+build windows
 package net
-//+build windows
 
 /*
 	Package net implements cross-platform Berkeley Sockets, DNS resolution and associated procedures.
@@ -10,18 +10,20 @@ package net
 	Copyright 2022 Tetralux        <tetraluxonpc@gmail.com>
 	Copyright 2022 Colin Davidson  <colrdavidson@gmail.com>
 	Copyright 2022 Jeroen van Rijn <nom@duclavier.com>.
+	Copyright 2024 Feoramund       <rune@swevencraft.org>.
 	Made available under Odin's BSD-3 license.
 
 	List of contributors:
 		Tetralux:        Initial implementation
 		Colin Davidson:  Linux platform code, OSX platform code, Odin-native DNS resolver
 		Jeroen van Rijn: Cross platform unification, code style, documentation
+		Feoramund:       FreeBSD platform code
 */
 
 import sys     "core:sys/windows"
 import strings "core:strings"
 
-_enumerate_interfaces :: proc(allocator := context.allocator) -> (interfaces: []Network_Interface, err: Network_Error) {
+_enumerate_interfaces :: proc(allocator := context.allocator) -> (interfaces: []Network_Interface, err: Interfaces_Error) {
 	context.allocator = allocator
 
 	buf:      []u8
@@ -50,7 +52,8 @@ _enumerate_interfaces :: proc(allocator := context.allocator) -> (interfaces: []
 		case 0:
 			break gaa
 		case:
-			return {}, Platform_Error(res)
+			set_last_platform_error(i32(res))
+			return {}, .Unknown 
 		}
 	}
 
@@ -61,13 +64,13 @@ _enumerate_interfaces :: proc(allocator := context.allocator) -> (interfaces: []
 	_interfaces := make([dynamic]Network_Interface, 0, allocator)
 	for adapter := (^sys.IP_Adapter_Addresses)(raw_data(buf)); adapter != nil; adapter = adapter.Next {
 		friendly_name, err1 := sys.wstring_to_utf8(sys.wstring(adapter.FriendlyName), 256, allocator)
-		if err1 != nil { return {}, Platform_Error(err1) }
+		if err1 != nil { return {}, .Allocation_Failure }
 
 		description, err2 :=  sys.wstring_to_utf8(sys.wstring(adapter.Description), 256, allocator)
-		if err2 != nil { return {}, Platform_Error(err2) }
+		if err2 != nil { return {}, .Allocation_Failure }
 
 		dns_suffix, err3  :=  sys.wstring_to_utf8(sys.wstring(adapter.DnsSuffix), 256, allocator)
-		if err3 != nil { return {}, Platform_Error(err3) }
+		if err3 != nil { return {}, .Allocation_Failure }
 
 		interface := Network_Interface{
 			adapter_name  = strings.clone(string(adapter.AdapterName)),

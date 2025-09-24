@@ -2,6 +2,7 @@
 	TOKEN_KIND(Token_Invalid, "Invalid"), \
 	TOKEN_KIND(Token_EOF,     "EOF"), \
 	TOKEN_KIND(Token_Comment, "Comment"), \
+	TOKEN_KIND(Token_FileTag, "FileTag"), \
 \
 TOKEN_KIND(Token__LiteralBegin, ""), \
 	TOKEN_KIND(Token_Ident,     "identifier"), \
@@ -939,6 +940,20 @@ gb_internal void tokenizer_get_token(Tokenizer *t, Token *token, int repeat=0) {
 			if (t->curr_rune == '!') {
 				token->kind = Token_Comment;
 				tokenizer_skip_line(t);
+			} else if (t->curr_rune == '+') {
+				token->kind = Token_FileTag;
+				
+				// Skip until end of line or until we hit what is probably a comment.
+				// The parsing of tags happens in `parse_file`.
+				while (t->curr_rune != GB_RUNE_EOF) {
+					if (t->curr_rune == '\n') {
+						break;
+					}
+					if (t->curr_rune == '/') {
+						break;
+					} 
+					advance_to_next_rune(t);
+				}
 			}
 			break;
 		case '/':
@@ -953,6 +968,7 @@ gb_internal void tokenizer_get_token(Tokenizer *t, Token *token, int repeat=0) {
 				advance_to_next_rune(t);
 				for (isize comment_scope = 1; comment_scope > 0; /**/) {
 					if (t->curr_rune == GB_RUNE_EOF) {
+						tokenizer_err(t, "Multi-line comment not terminated");
 						break;
 					} else if (t->curr_rune == '/') {
 						advance_to_next_rune(t);

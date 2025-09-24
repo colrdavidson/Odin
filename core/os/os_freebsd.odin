@@ -6,6 +6,7 @@ foreign import libc "system:c"
 import "base:runtime"
 import "core:strings"
 import "core:c"
+import "core:sys/freebsd"
 
 Handle :: distinct i32
 File_Time :: distinct u64
@@ -371,7 +372,7 @@ F_KINFO :: 22
 foreign libc {
 	@(link_name="__error")		__Error_location :: proc() -> ^c.int ---
 
-	@(link_name="open")             _unix_open          :: proc(path: cstring, flags: c.int, mode: c.int) -> Handle ---
+	@(link_name="open")             _unix_open          :: proc(path: cstring, flags: c.int, #c_vararg mode: ..u16) -> Handle ---
 	@(link_name="close")            _unix_close         :: proc(fd: Handle) -> c.int ---
 	@(link_name="read")             _unix_read          :: proc(fd: Handle, buf: rawptr, size: c.size_t) -> c.ssize_t ---
 	@(link_name="write")            _unix_write         :: proc(fd: Handle, buf: rawptr, size: c.size_t) -> c.ssize_t ---
@@ -388,7 +389,8 @@ foreign libc {
 	@(link_name="unlink")           _unix_unlink        :: proc(path: cstring) -> c.int ---
 	@(link_name="rmdir")            _unix_rmdir         :: proc(path: cstring) -> c.int ---
 	@(link_name="mkdir")            _unix_mkdir         :: proc(path: cstring, mode: mode_t) -> c.int ---
-	@(link_name="fcntl")            _unix_fcntl         :: proc(fd: Handle, cmd: c.int, arg: uintptr) -> c.int ---
+	@(link_name="fcntl")            _unix_fcntl         :: proc(fd: Handle, cmd: c.int, #c_vararg args: ..any) -> c.int ---
+	@(link_name="dup")              _unix_dup           :: proc(fd: Handle) -> Handle ---
 	
 	@(link_name="fdopendir")        _unix_fdopendir     :: proc(fd: Handle) -> Dir ---
 	@(link_name="closedir")         _unix_closedir      :: proc(dirp: Dir) -> c.int ---
@@ -401,7 +403,7 @@ foreign libc {
 	@(link_name="realloc")          _unix_realloc       :: proc(ptr: rawptr, size: c.size_t) -> rawptr ---
 	
 	@(link_name="getenv")           _unix_getenv        :: proc(cstring) -> cstring ---
-	@(link_name="realpath")         _unix_realpath      :: proc(path: cstring, resolved_path: rawptr) -> rawptr ---
+	@(link_name="realpath")         _unix_realpath      :: proc(path: cstring, resolved_path: [^]byte = nil) -> cstring ---
 	@(link_name="sysctlbyname")     _sysctlbyname       :: proc(path: cstring, oldp: rawptr, oldlenp: rawptr, newp: rawptr, newlen: int) -> c.int ---
 
 	@(link_name="exit")             _unix_exit          :: proc(status: c.int) -> ! ---
@@ -429,7 +431,7 @@ get_last_error :: proc "contextless" () -> Error {
 open :: proc(path: string, flags: int = O_RDONLY, mode: int = 0) -> (Handle, Error) {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	cstr := strings.clone_to_cstring(path, context.temp_allocator)
-	handle := _unix_open(cstr, c.int(flags), c.int(mode))
+	handle := _unix_open(cstr, c.int(flags), u16(mode))
 	if handle == -1 {
 		return INVALID_HANDLE, get_last_error()
 	}
@@ -445,8 +447,7 @@ close :: proc(fd: Handle) -> Error {
 }
 
 flush :: proc(fd: Handle) -> Error {
-	// do nothing
-	return nil
+	return cast(_Platform_Error)freebsd.fsync(cast(freebsd.Fd)fd)
 }
 
 // If you read or write more than `INT_MAX` bytes, FreeBSD returns `EINVAL`.
@@ -480,29 +481,45 @@ write :: proc(fd: Handle, data: []byte) -> (int, Error) {
 }
 
 read_at :: proc(fd: Handle, data: []byte, offset: i64) -> (n: int, err: Error) {
-	curr := seek(fd, offset, SEEK_CUR) or_return
-	n, err = read(fd, data)
-	_, err1 := seek(fd, curr, SEEK_SET)
-	if err1 != nil && err == nil {
-		err = err1
+	if len(data) == 0 {
+		return 0, nil
 	}
-	return
+
+	to_read := min(uint(len(data)), MAX_RW)
+
+	bytes_read, errno := freebsd.pread(cast(freebsd.Fd)fd, data[:to_read], cast(freebsd.off_t)offset)
+
+	return bytes_read, cast(_Platform_Error)errno
 }
 
 write_at :: proc(fd: Handle, data: []byte, offset: i64) -> (n: int, err: Error) {
-	curr := seek(fd, offset, SEEK_CUR) or_return
-	n, err = write(fd, data)
-	_, err1 := seek(fd, curr, SEEK_SET)
-	if err1 != nil && err == nil {
-		err = err1
+	if len(data) == 0 {
+		return 0, nil
 	}
-	return
+
+	to_write := min(uint(len(data)), MAX_RW)
+
+	bytes_written, errno := freebsd.pwrite(cast(freebsd.Fd)fd, data[:to_write], cast(freebsd.off_t)offset)
+
+	return bytes_written, cast(_Platform_Error)errno
 }
 
 seek :: proc(fd: Handle, offset: i64, whence: int) -> (i64, Error) {
+	switch whence {
+	case SEEK_SET, SEEK_CUR, SEEK_END:
+		break
+	case:
+		return 0, .Invalid_Whence
+	}
 	res := _unix_seek(fd, offset, c.int(whence))
 	if res == -1 {
-		return -1, get_last_error()
+		errno := get_last_error()
+		switch errno {
+		case .EINVAL:
+			return 0, .Invalid_Offset
+		case:
+			return 0, errno
+		}
 	}
 	return res, nil
 }
@@ -607,6 +624,14 @@ is_dir_path :: proc(path: string, follow_links: bool = true) -> bool {
 is_file :: proc {is_file_path, is_file_handle}
 is_dir :: proc {is_dir_path, is_dir_handle}
 
+@(require_results)
+exists :: proc(path: string) -> bool {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	res := _unix_access(cpath, O_RDONLY)
+	return res == 0
+}
+
 // NOTE(bill): Uses startup to initialize it
 
 stdin: Handle  = 0
@@ -637,7 +662,7 @@ last_write_time_by_name :: proc(name: string) -> (File_Time, Error) {
 	return File_Time(modified), nil
 }
 
-@(private, require_results)
+@(private, require_results, no_sanitize_memory)
 _stat :: proc(path: string) -> (OS_Stat, Error) {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	cstr := strings.clone_to_cstring(path, context.temp_allocator)
@@ -649,7 +674,7 @@ _stat :: proc(path: string) -> (OS_Stat, Error) {
 	return s, nil
 }
 
-@(private, require_results)
+@(private, require_results, no_sanitize_memory)
 _lstat :: proc(path: string) -> (OS_Stat, Error) {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	cstr := strings.clone_to_cstring(path, context.temp_allocator)
@@ -663,7 +688,7 @@ _lstat :: proc(path: string) -> (OS_Stat, Error) {
 	return s, nil
 }
 
-@(private, require_results)
+@(private, require_results, no_sanitize_memory)
 _fstat :: proc(fd: Handle) -> (OS_Stat, Error) {
 	s: OS_Stat = ---
 	result := _unix_fstat(fd, &s)
@@ -739,6 +764,15 @@ _readlink :: proc(path: string) -> (string, Error) {
 	return "", Error{}
 }
 
+@(private, require_results)
+_dup :: proc(fd: Handle) -> (Handle, Error) {
+	dup := _unix_dup(fd)
+	if dup == -1 {
+		return INVALID_HANDLE, get_last_error()
+	}
+	return dup, nil
+}
+
 @(require_results)
 absolute_path_from_handle :: proc(fd: Handle) -> (string, Error) {
 	// NOTE(Feoramund): The situation isn't ideal, but this was the best way I
@@ -763,7 +797,7 @@ absolute_path_from_handle :: proc(fd: Handle) -> (string, Error) {
 }
 
 @(require_results)
-absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
+absolute_path_from_relative :: proc(rel: string, allocator := context.allocator) -> (path: string, err: Error) {
 	rel := rel
 	if rel == "" {
 		rel = "."
@@ -776,12 +810,9 @@ absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
 	if path_ptr == nil {
 		return "", get_last_error()
 	}
-	defer _unix_free(path_ptr)
+	defer _unix_free(rawptr(path_ptr))
 
-
-	path = strings.clone(string(cstring(path_ptr)))
-
-	return path, nil
+	return strings.clone(string(path_ptr), allocator)
 }
 
 access :: proc(path: string, mask: int) -> (bool, Error) {
@@ -796,10 +827,10 @@ access :: proc(path: string, mask: int) -> (bool, Error) {
 }
 
 @(require_results)
-lookup_env :: proc(key: string, allocator := context.allocator) -> (value: string, found: bool) {
+lookup_env_alloc :: proc(key: string, allocator := context.allocator) -> (value: string, found: bool) {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = context.temp_allocator == allocator)
-
 	path_str := strings.clone_to_cstring(key, context.temp_allocator)
+	// NOTE(tetra): Lifetime of 'cstr' is unclear, but _unix_free(cstr) segfaults.
 	cstr := _unix_getenv(path_str)
 	if cstr == nil {
 		return "", false
@@ -808,13 +839,42 @@ lookup_env :: proc(key: string, allocator := context.allocator) -> (value: strin
 }
 
 @(require_results)
-get_env :: proc(key: string, allocator := context.allocator) -> (value: string) {
+lookup_env_buffer :: proc(buf: []u8, key: string) -> (value: string, err: Error) {
+	if len(key) + 1 > len(buf) {
+		return "", .Buffer_Full
+	} else {
+		copy(buf, key)
+	}
+
+	if value = string(_unix_getenv(cstring(raw_data(buf)))); value == "" {
+		return "", .Env_Var_Not_Found
+	} else {
+		if len(value) > len(buf) {
+			return "", .Buffer_Full
+		} else {
+			copy(buf, value)
+			return string(buf[:len(value)]), nil
+		}
+	}
+}
+lookup_env :: proc{lookup_env_alloc, lookup_env_buffer}
+
+@(require_results)
+get_env_alloc :: proc(key: string, allocator := context.allocator) -> (value: string) {
 	value, _ = lookup_env(key, allocator)
 	return
 }
 
 @(require_results)
-get_current_directory :: proc() -> string {
+get_env_buf :: proc(buf: []u8, key: string) -> (value: string) {
+	value, _ = lookup_env(buf, key)
+	return
+}
+get_env :: proc{get_env_alloc, get_env_buf}
+
+@(require_results)
+get_current_directory :: proc(allocator := context.allocator) -> string {
+	context.allocator = allocator
 	// NOTE(tetra): I would use PATH_MAX here, but I was not able to find
 	// an authoritative value for it across all systems.
 	// The largest value I could find was 4096, so might as well use the page size.
@@ -894,7 +954,7 @@ get_page_size :: proc() -> int {
 _processor_core_count :: proc() -> int {
 	count : int = 0
 	count_size := size_of(count)
-	if _sysctlbyname("hw.logicalcpu", &count, &count_size, nil, 0) == 0 {
+	if _sysctlbyname("hw.ncpu", &count, &count_size, nil, 0) == 0 {
 		if count > 0 {
 			return count
 		}
@@ -904,11 +964,18 @@ _processor_core_count :: proc() -> int {
 }
 
 
-@(require_results)
-_alloc_command_line_arguments :: proc() -> []string {
+@(private, require_results)
+_alloc_command_line_arguments :: proc "contextless" () -> []string {
+	context = runtime.default_context()
 	res := make([]string, len(runtime.args__))
-	for arg, i in runtime.args__ {
-		res[i] = string(arg)
+	for _, i in res {
+		res[i] = string(runtime.args__[i])
 	}
 	return res
+}
+
+@(private, fini)
+_delete_command_line_arguments :: proc "contextless" () {
+	context = runtime.default_context()
+	delete(args)
 }

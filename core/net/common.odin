@@ -1,4 +1,4 @@
-// +build windows, linux, darwin
+#+build windows, linux, darwin, freebsd
 package net
 
 /*
@@ -13,12 +13,14 @@ package net
 	Copyright 2022 Tetralux        <tetraluxonpc@gmail.com>
 	Copyright 2022 Colin Davidson  <colrdavidson@gmail.com>
 	Copyright 2022 Jeroen van Rijn <nom@duclavier.com>.
+	Copyright 2024 Feoramund       <rune@swevencraft.org>.
 	Made available under Odin's BSD-3 license.
 
 	List of contributors:
 		Tetralux:        Initial implementation
 		Colin Davidson:  Linux platform code, OSX platform code, Odin-native DNS resolver
 		Jeroen van Rijn: Cross platform unification, code style, documentation
+		Feoramund:       FreeBSD platform code
 */
 
 import "base:runtime"
@@ -51,8 +53,6 @@ ODIN_NET_TCP_NODELAY_DEFAULT :: #config(ODIN_NET_TCP_NODELAY_DEFAULT, true)
 Maybe :: runtime.Maybe
 
 Network_Error :: union #shared_nil {
-	General_Error,
-	Platform_Error,
 	Create_Socket_Error,
 	Dial_Error,
 	Listen_Error,
@@ -63,6 +63,8 @@ Network_Error :: union #shared_nil {
 	TCP_Recv_Error,
 	UDP_Recv_Error,
 	Shutdown_Error,
+	Interfaces_Error,
+	Socket_Info_Error,
 	Socket_Option_Error,
 	Set_Blocking_Error,
 	Parse_Endpoint_Error,
@@ -70,15 +72,16 @@ Network_Error :: union #shared_nil {
 	DNS_Error,
 }
 
-General_Error :: enum u32 {
-	None = 0,
-	Unable_To_Enumerate_Network_Interfaces = 1,
+#assert(size_of(Network_Error) == 8)
+
+Interfaces_Error :: enum u32 {
+	None,
+	Unable_To_Enumerate_Network_Interfaces,
+	Allocation_Failure,
+	Unknown,
 }
 
-// `Platform_Error` is used to wrap errors returned by the different platforms that don't fit a common error.
-Platform_Error :: enum u32 {}
-
-Parse_Endpoint_Error :: enum {
+Parse_Endpoint_Error :: enum u32 {
 	None          = 0,
 	Bad_Port      = 1,
 	Bad_Address,
@@ -91,6 +94,7 @@ Resolve_Error :: enum u32 {
 }
 
 DNS_Error :: enum u32 {
+	None = 0,
 	Invalid_Hostname_Error = 1,
 	Invalid_Hosts_Config_Error,
 	Invalid_Resolv_Config_Error,
@@ -104,7 +108,7 @@ TCP_Options :: struct {
 	no_delay: bool,
 }
 
-default_tcp_options := TCP_Options {
+DEFAULT_TCP_OPTIONS :: TCP_Options {
 	no_delay = ODIN_NET_TCP_NODELAY_DEFAULT,
 }
 
@@ -142,6 +146,9 @@ IP6_Loopback :: IP6_Address{0, 0, 0, 0, 0, 0, 0, 1}
 
 IP4_Any := IP4_Address{}
 IP6_Any := IP6_Address{}
+
+IP4_mDNS_Broadcast := Endpoint{address=IP4_Address{224, 0, 0, 251}, port=5353}
+IP6_mDNS_Broadcast := Endpoint{address=IP6_Address{65282, 0, 0, 0, 0, 0, 0, 251}, port = 5353}
 
 Endpoint :: struct {
 	address: Address,
@@ -253,6 +260,9 @@ DNS_Configuration :: struct {
 	// Configuration files.
 	resolv_conf: string,
 	hosts_file:  string,
+
+	resolv_conf_buf: [128]u8,
+	hosts_file_buf:  [128]u8,
 
 	// TODO: Allow loading these up with `reload_configuration()` call or the like,
 	// so we don't have to do it each call.

@@ -104,6 +104,7 @@ enum ParameterValueKind {
 	ParameterValue_Constant,
 	ParameterValue_Nil,
 	ParameterValue_Location,
+	ParameterValue_Expression,
 	ParameterValue_Value,
 };
 
@@ -163,6 +164,7 @@ struct Entity {
 	u64         id;
 	std::atomic<u64>         flags;
 	std::atomic<EntityState> state;
+	std::atomic<i32>         min_dep_count;
 	Token       token;
 	Scope *     scope;
 	Type *      type;
@@ -234,6 +236,10 @@ struct Entity {
 			Type * type_parameter_specialization;
 			String ir_mangled_name;
 			bool   is_type_alias;
+			bool   objc_is_implementation;
+			Type*  objc_superclass;
+			Type*  objc_ivar;
+			Entity*objc_context_provider;
 			String objc_class_name;
 			TypeNameObjCMetadata *objc_metadata;
 		} TypeName;
@@ -255,6 +261,10 @@ struct Entity {
 			bool    entry_point_only           : 1;
 			bool    has_instrumentation        : 1;
 			bool    is_memcpy_like             : 1;
+			bool    uses_branch_location       : 1;
+			bool    is_anonymous               : 1;
+			bool    no_sanitize_address        : 1;
+			bool    no_sanitize_memory         : 1;
 		} Procedure;
 		struct {
 			Array<Entity *> entities;
@@ -272,6 +282,7 @@ struct Entity {
 			Slice<String> paths;
 			String name;
 			i64 priority_index;
+			bool ignore_duplicates;
 			String extra_linker_flags;
 		} LibraryName;
 		i32 Nil;
@@ -337,7 +348,7 @@ gb_internal Entity *alloc_entity(EntityKind kind, Scope *scope, Token token, Typ
 	entity->type   = type;
 	entity->id     = 1 + global_entity_id.fetch_add(1);
 	if (token.pos.file_id) {
-		entity->file = thread_safe_get_ast_file_from_id(token.pos.file_id);
+		entity->file = thread_unsafe_get_ast_file_from_id(token.pos.file_id);
 	}
 	return entity;
 }

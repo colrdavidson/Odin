@@ -161,11 +161,36 @@ parse_file :: proc(p: ^Parser, file: ^ast.File) -> bool {
 
 	docs := p.lead_comment
 
-	p.file.pkg_token = expect_token(p, .Package)
-	if p.file.pkg_token.kind != .Package {
-		return false
+	invalid_pre_package_token: Maybe(tokenizer.Token)
+
+	for p.curr_tok.kind != .Package && p.curr_tok.kind != .EOF {
+		if p.curr_tok.kind == .Comment {
+			consume_comment_groups(p, p.prev_tok)
+		} else if p.curr_tok.kind == .File_Tag {
+			append(&p.file.tags, p.curr_tok)
+			advance_token(p)
+		} else {
+			if invalid_pre_package_token == nil {
+				invalid_pre_package_token = p.curr_tok
+			}
+
+			advance_token(p)
+		}
 	}
 
+	if p.curr_tok.kind != .Package {
+		t := invalid_pre_package_token.? or_else p.curr_tok
+		error(p, t.pos, "Expected a package declaration at the start of the file")
+		return false
+	}
+	
+	p.file.pkg_token = expect_token(p, .Package)
+	
+	if ippt, ok := invalid_pre_package_token.?; ok {
+		error(p, ippt.pos, "Expected only comments or lines starting with '#+' before the package declaration")
+		return false
+	}
+	
 	pkg_name := expect_token_after(p, .Ident, "package")
 	if pkg_name.kind == .Ident {
 		switch name := pkg_name.text; {
@@ -323,27 +348,30 @@ consume_comment_group :: proc(p: ^Parser, n: int) -> (comments: ^ast.Comment_Gro
 }
 
 consume_comment_groups :: proc(p: ^Parser, prev: tokenizer.Token) {
-	if p.curr_tok.kind == .Comment {
-		comment: ^ast.Comment_Group
-		end_line := 0
-
-		if p.curr_tok.pos.line == prev.pos.line {
-			comment, end_line = consume_comment_group(p, 0)
-			if p.curr_tok.pos.line != end_line || p.curr_tok.kind == .EOF {
-				p.line_comment = comment
-			}
-		}
-
-		end_line = -1
-		for p.curr_tok.kind == .Comment {
-			comment, end_line = consume_comment_group(p, 1)
-		}
-		if end_line+1 >= p.curr_tok.pos.line || end_line < 0 {
-			p.lead_comment = comment
-		}
-
-		assert(p.curr_tok.kind != .Comment)
+	if p.curr_tok.kind != .Comment {
+		return
 	}
+	comment: ^ast.Comment_Group
+	end_line := 0
+
+	if p.curr_tok.pos.line == prev.pos.line {
+		comment, end_line = consume_comment_group(p, 0)
+		if p.curr_tok.pos.line != end_line ||
+		   p.curr_tok.pos.line == prev.pos.line+1 ||
+		   p.curr_tok.kind == .EOF {
+			p.line_comment = comment
+		}
+	}
+
+	end_line = -1
+	for p.curr_tok.kind == .Comment {
+		comment, end_line = consume_comment_group(p, 1)
+	}
+	if end_line+1 >= p.curr_tok.pos.line || end_line < 0 {
+		p.lead_comment = comment
+	}
+
+	assert(p.curr_tok.kind != .Comment)
 }
 
 advance_token :: proc(p: ^Parser) -> tokenizer.Token {
@@ -1237,11 +1265,49 @@ parse_foreign_decl :: proc(p: ^Parser) -> ^ast.Decl {
 
 
 parse_unrolled_for_loop :: proc(p: ^Parser, inline_tok: tokenizer.Token) -> ^ast.Stmt {
-	for_tok := expect_token(p, .For)
 	val0, val1: ^ast.Expr
 	in_tok: tokenizer.Token
 	expr: ^ast.Expr
 	body: ^ast.Stmt
+	args: [dynamic]^ast.Expr
+
+	if allow_token(p, .Open_Paren) {
+		p.expr_level += 1
+		if p.curr_tok.kind == .Close_Paren {
+			error(p, p.curr_tok.pos, "#unroll expected at least 1 argument, got 0")
+		} else {
+			args = make([dynamic]^ast.Expr)
+			for p.curr_tok.kind != .Close_Paren &&
+			    p.curr_tok.kind != .EOF {
+				arg := parse_value(p)
+
+				if p.curr_tok.kind == .Eq {
+					eq := expect_token(p, .Eq)
+					if arg != nil {
+						if _, ok := arg.derived.(^ast.Ident); !ok {
+							error(p, arg.pos, "expected an identifier for 'key=value'")
+						}
+					}
+					value := parse_value(p)
+					fv := ast.new(ast.Field_Value, arg.pos, value)
+					fv.field = arg
+					fv.sep   = eq.pos
+					fv.value = value
+
+					arg = fv
+				}
+
+				append(&args, arg)
+
+				allow_token(p, .Comma) or_break
+			}
+		}
+
+		p.expr_level -= 1
+		_ = expect_token_after(p, .Close_Paren, "#unroll")
+	}
+
+	for_tok := expect_token(p, .For)
 
 	bad_stmt := false
 
@@ -1284,7 +1350,8 @@ parse_unrolled_for_loop :: proc(p: ^Parser, inline_tok: tokenizer.Token) -> ^ast
 	}
 
 	range_stmt := ast.new(ast.Inline_Range_Stmt, inline_tok.pos, body)
-	range_stmt.inline_pos = inline_tok.pos
+	range_stmt.unroll_pos = inline_tok.pos
+	range_stmt.args = args[:]
 	range_stmt.for_pos = for_tok.pos
 	range_stmt.val0 = val0
 	range_stmt.val1 = val1
@@ -1436,6 +1503,15 @@ parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				stmt.state_flags += {.Bounds_Check}
 			case "no_bounds_check":
 				stmt.state_flags += {.No_Bounds_Check}
+			}
+			return stmt
+		case "type_assert", "no_type_assert":
+			stmt := parse_stmt(p)
+			switch name {
+			case "type_assert":
+				stmt.state_flags += {.Type_Assert}
+			case "no_type_assert":
+				stmt.state_flags += {.No_Type_Assert}
 			}
 			return stmt
 		case "partial":
@@ -2234,6 +2310,7 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 		open := expect_token(p, .Open_Paren)
 		p.expr_level += 1
 		expr := parse_expr(p, false)
+		skip_possible_newline(p)
 		p.expr_level -= 1
 		close := expect_token(p, .Close_Paren)
 
@@ -2266,6 +2343,16 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 			bd := ast.new(ast.Basic_Directive, tok.pos, end_pos(name))
 			bd.tok  = tok
 			bd.name = name.text
+			return bd
+
+		case "caller_expression":
+			bd := ast.new(ast.Basic_Directive, tok.pos, end_pos(name))
+			bd.tok  = tok
+			bd.name = name.text
+
+			if peek_token_kind(p, .Open_Paren) {
+				return parse_call_expr(p, bd)
+			}
 			return bd
 
 		case "location", "exists", "load", "load_directory", "load_hash", "hash", "assert", "panic", "defined", "config":
@@ -2398,7 +2485,7 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 				allow_token(p, .Comma) or_break
 			}
 
-			close := expect_token(p, .Close_Brace)
+			close := expect_closing_brace_of_field_list(p)
 
 			if len(args) == 0 {
 				error(p, tok.pos, "expected at least 1 argument in procedure group")
@@ -2566,9 +2653,10 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 	case .Struct:
 		tok := expect_token(p, .Struct)
 
-		poly_params: ^ast.Field_List
-		align:        ^ast.Expr
-		field_align:  ^ast.Expr
+		poly_params:     ^ast.Field_List
+		align:           ^ast.Expr
+		min_field_align: ^ast.Expr
+		max_field_align: ^ast.Expr
 		is_packed:    bool
 		is_raw_union: bool
 		is_no_copy:   bool
@@ -2601,10 +2689,21 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 				}
 				align = parse_expr(p, true)
 			case "field_align":
-				if field_align != nil {
+				if min_field_align != nil {
 					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
 				}
-				field_align = parse_expr(p, true)
+				warn(p, tag.pos, "#field_align has been deprecated in favour of #min_field_align")
+				min_field_align = parse_expr(p, true)
+			case "min_field_align":
+				if min_field_align != nil {
+					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
+				}
+				min_field_align = parse_expr(p, true)
+			case "max_field_align":
+				if max_field_align != nil {
+					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
+				}
+				max_field_align = parse_expr(p, true)
 			case "raw_union":
 				if is_raw_union {
 					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
@@ -2645,16 +2744,17 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 		close := expect_closing_brace_of_field_list(p)
 
 		st := ast.new(ast.Struct_Type, tok.pos, end_pos(close))
-		st.poly_params   = poly_params
-		st.align         = align
-		st.field_align   = field_align
-		st.is_packed     = is_packed
-		st.is_raw_union  = is_raw_union
-		st.is_no_copy    = is_no_copy
-		st.fields        = fields
-		st.name_count    = name_count
-		st.where_token   = where_token
-		st.where_clauses = where_clauses
+		st.poly_params     = poly_params
+		st.align           = align
+		st.min_field_align = min_field_align
+		st.max_field_align = max_field_align
+		st.is_packed       = is_packed
+		st.is_raw_union    = is_raw_union
+		st.is_no_copy      = is_no_copy
+		st.fields          = fields
+		st.name_count      = name_count
+		st.where_token     = where_token
+		st.where_clauses   = where_clauses
 		return st
 
 	case .Union:
@@ -2826,21 +2926,34 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 
 		fields: [dynamic]^ast.Bit_Field_Field
 		for p.curr_tok.kind != .Close_Brace && p.curr_tok.kind != .EOF {
+			docs := p.lead_comment
+
 			name := parse_ident(p)
 			expect_token(p, .Colon)
 			type := parse_type(p)
 			expect_token(p, .Or)
 			bit_size := parse_expr(p, true)
 
+			tag: tokenizer.Token
+			if p.curr_tok.kind == .String {
+				tag = expect_token(p, .String)
+			}
+			ok := allow_token(p, .Comma)
+
 			field := ast.new(ast.Bit_Field_Field, name.pos, bit_size)
 
 			field.name     = name
 			field.type     = type
 			field.bit_size = bit_size
+			field.tag      = tag
+			field.docs     = docs
+			field.comments = p.line_comment
 
 			append(&fields, field)
 
-			allow_token(p, .Comma) or_break
+			if !ok {
+				break
+			}
 		}
 
 		close := expect_closing_brace_of_field_list(p)
@@ -3424,6 +3537,7 @@ parse_binary_expr :: proc(p: ^Parser, lhs: bool, prec_in: int) -> ^ast.Expr {
 			case .When:
 				x := expr
 				cond := parse_expr(p, lhs)
+				skip_possible_newline(p)
 				else_tok := expect_token(p, .Else)
 				y := parse_expr(p, lhs)
 				te := ast.new(ast.Ternary_When_Expr, expr.pos, end_pos(p.prev_tok))
@@ -3633,6 +3747,8 @@ parse_value_decl :: proc(p: ^Parser, names: []^ast.Expr, docs: ^ast.Comment_Grou
 		}
 	}
 
+	end := p.prev_tok
+
 	if p.expr_level >= 0 {
 		end: ^ast.Expr
 		if !is_mutable && len(values) > 0 {
@@ -3652,7 +3768,7 @@ parse_value_decl :: proc(p: ^Parser, names: []^ast.Expr, docs: ^ast.Comment_Grou
 		}
 	}
 
-	decl := ast.new(ast.Value_Decl, names[0].pos, end_pos(p.prev_tok))
+	decl := ast.new(ast.Value_Decl, names[0].pos, end_pos(end))
 	decl.docs = docs
 	decl.names = names
 	decl.type = type
@@ -3674,10 +3790,6 @@ parse_import_decl :: proc(p: ^Parser, kind := Import_Decl_Kind.Standard) -> ^ast
 		import_name = advance_token(p)
 	case:
 		import_name.pos = p.curr_tok.pos
-	}
-
-	if !is_using && is_blank_ident(import_name) {
-		error(p, import_name.pos, "illegal import name: '_'")
 	}
 
 	path := expect_token_after(p, .String, "import")

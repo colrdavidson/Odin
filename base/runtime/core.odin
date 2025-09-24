@@ -18,7 +18,7 @@
 // This could change at a later date if the all these data structures are
 // implemented within the compiler rather than in this "preload" file
 //
-//+no-instrumentation
+#+no-instrumentation
 package runtime
 
 import "base:intrinsics"
@@ -61,6 +61,11 @@ Type_Info_Struct_Soa_Kind :: enum u8 {
 	Dynamic = 3,
 }
 
+Type_Info_String_Encoding_Kind :: enum u8 {
+	UTF_8  = 0,
+	UTF_16 = 1,
+}
+
 // Variant Types
 Type_Info_Named :: struct {
 	name: string,
@@ -73,7 +78,7 @@ Type_Info_Rune       :: struct {}
 Type_Info_Float      :: struct {endianness: Platform_Endianness}
 Type_Info_Complex    :: struct {}
 Type_Info_Quaternion :: struct {}
-Type_Info_String     :: struct {is_cstring: bool}
+Type_Info_String     :: struct {is_cstring: bool, encoding: Type_Info_String_Encoding_Kind}
 Type_Info_Boolean    :: struct {}
 Type_Info_Any        :: struct {}
 Type_Info_Type_Id    :: struct {}
@@ -110,13 +115,12 @@ Type_Info_Parameters :: struct { // Only used for procedures parameters and resu
 	types:        []^Type_Info,
 	names:        []string,
 }
-Type_Info_Tuple :: Type_Info_Parameters // Will be removed eventually
 
 Type_Info_Struct_Flags :: distinct bit_set[Type_Info_Struct_Flag; u8]
 Type_Info_Struct_Flag :: enum u8 {
 	packed    = 0,
 	raw_union = 1,
-	no_copy   = 2,
+	_         = 2,
 	align     = 3,
 }
 
@@ -170,14 +174,6 @@ Type_Info_Simd_Vector :: struct {
 	elem:       ^Type_Info,
 	elem_size:  int,
 	count:      int,
-}
-Type_Info_Relative_Pointer :: struct {
-	pointer:      ^Type_Info, // ^T
-	base_integer: ^Type_Info,
-}
-Type_Info_Relative_Multi_Pointer :: struct {
-	pointer:      ^Type_Info, // [^]T
-	base_integer: ^Type_Info,
 }
 Type_Info_Matrix :: struct {
 	elem:         ^Type_Info,
@@ -241,56 +237,11 @@ Type_Info :: struct {
 		Type_Info_Map,
 		Type_Info_Bit_Set,
 		Type_Info_Simd_Vector,
-		Type_Info_Relative_Pointer,
-		Type_Info_Relative_Multi_Pointer,
 		Type_Info_Matrix,
 		Type_Info_Soa_Pointer,
 		Type_Info_Bit_Field,
 	},
 }
-
-// NOTE(bill): This must match the compiler's
-Typeid_Kind :: enum u8 {
-	Invalid,
-	Integer,
-	Rune,
-	Float,
-	Complex,
-	Quaternion,
-	String,
-	Boolean,
-	Any,
-	Type_Id,
-	Pointer,
-	Multi_Pointer,
-	Procedure,
-	Array,
-	Enumerated_Array,
-	Dynamic_Array,
-	Slice,
-	Tuple,
-	Struct,
-	Union,
-	Enum,
-	Map,
-	Bit_Set,
-	Simd_Vector,
-	Relative_Pointer,
-	Relative_Multi_Pointer,
-	Matrix,
-	Soa_Pointer,
-	Bit_Field,
-}
-#assert(len(Typeid_Kind) < 32)
-
-Typeid_Bit_Field :: bit_field uintptr {
-	index:    uintptr     | 8*size_of(uintptr) - 8,
-	kind:     Typeid_Kind | 5, // Typeid_Kind
-	named:    bool        | 1,
-	special:  bool        | 1, // signed, cstring, etc
-	reserved: bool        | 1,
-}
-#assert(size_of(Typeid_Bit_Field) == size_of(uintptr))
 
 // NOTE(bill): only the ones that are needed (not all types)
 // This will be set by the compiler
@@ -451,6 +402,11 @@ Raw_String :: struct {
 	len:  int,
 }
 
+Raw_String16 :: struct {
+	data: [^]u16,
+	len:  int,
+}
+
 Raw_Slice :: struct {
 	data: rawptr,
 	len:  int,
@@ -495,10 +451,20 @@ Raw_Any :: struct {
 	data: rawptr,
 	id:   typeid,
 }
+when !ODIN_NO_RTTI {
+	#assert(size_of(Raw_Any) == size_of(any))
+}
 
 Raw_Cstring :: struct {
 	data: [^]byte,
 }
+#assert(size_of(Raw_Cstring) == size_of(cstring))
+
+Raw_Cstring16 :: struct {
+	data: [^]u16,
+}
+#assert(size_of(Raw_Cstring16) == size_of(cstring16))
+
 
 Raw_Soa_Pointer :: struct {
 	data:  rawptr,
@@ -546,9 +512,22 @@ Odin_OS_Type :: type_of(ODIN_OS)
 		arm64,
 		wasm32,
 		wasm64p32,
+		riscv64,
 	}
 */
 Odin_Arch_Type :: type_of(ODIN_ARCH)
+
+Odin_Arch_Types :: bit_set[Odin_Arch_Type]
+
+ALL_ODIN_ARCH_TYPES :: Odin_Arch_Types{
+	.amd64,
+	.i386,
+	.arm32,
+	.arm64,
+	.wasm32,
+	.wasm64p32,
+	.riscv64,
+}
 
 /*
 	// Defined internally by the compiler
@@ -573,15 +552,38 @@ Odin_Build_Mode_Type :: type_of(ODIN_BUILD_MODE)
 */
 Odin_Endian_Type :: type_of(ODIN_ENDIAN)
 
+Odin_OS_Types :: bit_set[Odin_OS_Type]
+
+ALL_ODIN_OS_TYPES :: Odin_OS_Types{
+	.Windows,
+	.Darwin,
+	.Linux,
+	.Essence,
+	.FreeBSD,
+	.OpenBSD,
+	.NetBSD,
+	.Haiku,
+	.WASI,
+	.JS,
+	.Orca,
+	.Freestanding,
+}
 
 /*
 	// Defined internally by the compiler
 	Odin_Platform_Subtarget_Type :: enum int {
 		Default,
-		iOS,
+		iPhone,
+		iPhoneSimulator
+		Android,
 	}
 */
 Odin_Platform_Subtarget_Type :: type_of(ODIN_PLATFORM_SUBTARGET)
+
+Odin_Platform_Subtarget_Types :: bit_set[Odin_Platform_Subtarget_Type]
+
+@(builtin)
+ODIN_PLATFORM_SUBTARGET_IOS :: ODIN_PLATFORM_SUBTARGET == .iPhone || ODIN_PLATFORM_SUBTARGET == .iPhoneSimulator
 
 /*
 	// Defined internally by the compiler
@@ -669,13 +671,16 @@ type_info_core :: proc "contextless" (info: ^Type_Info) -> ^Type_Info {
 type_info_base_without_enum :: type_info_core
 
 __type_info_of :: proc "contextless" (id: typeid) -> ^Type_Info #no_bounds_check {
-	MASK :: 1<<(8*size_of(typeid) - 8) - 1
-	data := transmute(uintptr)id
-	n := int(data & MASK)
-	if n < 0 || n >= len(type_table) {
-		n = 0
+	n := u64(len(type_table))
+	i := transmute(u64)id % n
+	for _ in 0..<n {
+		ptr := type_table[i]
+		if ptr != nil && ptr.id == id {
+			return ptr
+		}
+		i = i+1 if i+1 < n else 0
 	}
-	return type_table[n]
+	return type_table[0]
 }
 
 when !ODIN_NO_RTTI {
@@ -750,6 +755,10 @@ __init_context :: proc "contextless" (c: ^Context) {
 }
 
 default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code_Location) -> ! {
+	default_assertion_contextless_failure_proc(prefix, message, loc)
+}
+
+default_assertion_contextless_failure_proc :: proc "contextless" (prefix, message: string, loc: Source_Code_Location) -> ! {
 	when ODIN_OS == .Freestanding {
 		// Do nothing
 	} else {

@@ -1,4 +1,4 @@
-//+build linux, openbsd, freebsd
+#+build linux, openbsd, freebsd
 package xlib
 
 foreign import xlib "system:X11"
@@ -9,12 +9,48 @@ foreign xlib {
 foreign import xcursor "system:Xcursor"
 @(default_calling_convention="c", link_prefix="X")
 foreign xcursor {
-	cursorGetTheme         :: proc(display: ^Display) -> cstring ---
-	cursorGetDefaultSize   :: proc(display: ^Display) -> i32 ---
-	cursorLibraryLoadImage :: proc(name: cstring, theme: cstring, size: i32) -> rawptr ---
-	cursorImageLoadCursor  :: proc(display: ^Display, img: rawptr) -> Cursor ---
-	cursorImageDestroy     :: proc(img: rawptr) ---
+	cursorGetTheme          :: proc(display: ^Display) -> cstring ---
+	cursorGetDefaultSize    :: proc(display: ^Display) -> i32 ---
+	cursorLibraryLoadCursor :: proc(display: ^Display, name: cstring) -> Cursor ---
+	cursorLibraryLoadImage  :: proc(name: cstring, theme: cstring, size: i32) -> rawptr ---
+	cursorImageLoadCursor   :: proc(display: ^Display, img: rawptr) -> Cursor ---
+	cursorImageDestroy      :: proc(img: rawptr) ---
 }
+
+foreign import xfixes "system:Xfixes"
+@(default_calling_convention="c", link_prefix="XFixes")
+foreign xfixes {
+	HideCursor :: proc(display: ^Display, window: Window) ---
+	ShowCursor :: proc(display: ^Display, window: Window) ---
+}
+
+foreign import xrandr "system:Xrandr"
+@(default_calling_convention="c")
+foreign xrandr {
+	XRRSizes :: proc(display: ^Display, screen: i32, nsizes: ^i32) -> [^]XRRScreenSize ---
+	XRRGetScreenResources :: proc(display: ^Display, window: Window) -> ^XRRScreenResources ---
+	XRRFreeScreenResources :: proc(resources: ^XRRScreenResources) ---
+	XRRGetOutputInfo :: proc(display: ^Display, resources: ^XRRScreenResources, output: RROutput) -> ^XRROutputInfo ---
+	XRRFreeOutputInfo :: proc(output_info: ^XRROutputInfo) ---
+	XRRGetCrtcInfo :: proc(display: ^Display, resources: ^XRRScreenResources, crtc: RRCrtc) -> ^XRRCrtcInfo ---
+	XRRFreeCrtcInfo :: proc(crtc_info: ^XRRCrtcInfo) ---
+	XRRGetMonitors :: proc(dpy: ^Display, window: Window, get_active: b32, nmonitors: ^i32) -> [^]XRRMonitorInfo ---
+}
+
+foreign import xinput "system:Xi"
+foreign xinput {
+	XISelectEvents :: proc(display: ^Display, window: Window, masks: [^]XIEventMask, num_masks: i32) -> i32 ---
+	XIQueryVersion :: proc(display: ^Display, major: ^i32, minor: ^i32) -> Status ---
+}
+
+XISetMask :: proc(ptr: [^]u8, event: XIEventType) {
+	ptr[cast(i32)event >> 3] |= (1 << cast(uint)((cast(i32)event) & 7))
+}
+
+XIMaskIsSet :: proc(ptr: [^]u8, event: i32) -> bool {
+	return (ptr[event >> 3] & (1 << cast(uint)((event) & 7))) != 0
+}
+
 
 /* ----  X11/Xlib.h ---------------------------------------------------------*/
 
@@ -154,8 +190,8 @@ foreign xlib {
 		display: ^Display,
 		window:  Window,
 		mask:    WindowChangesMask,
-		values:  XWindowChanges,
-		) ---
+		changes: ^XWindowChanges,
+		) -> i32 ---
 	MoveWindow :: proc(
 		display: ^Display,
 		window:  Window,
@@ -181,6 +217,11 @@ foreign xlib {
 		window:  Window,
 		width:   u32,
 		) ---
+	SetWindowBorder :: proc(
+		display: ^Display,
+		window: Window,
+		pixel: uint,
+		) ---
 	// Window: changing stacking order
 	RaiseWindow :: proc(display: ^Display, window: Window) ---
 	LowerWindow :: proc(display: ^Display, window: Window) ---
@@ -193,7 +234,7 @@ foreign xlib {
 		display:   ^Display,
 		window:    Window,
 		attr_mask: WindowAttributeMask,
-		attr:      XWindowAttributes,
+		attr:      ^XWindowAttributes,
 		) ---
 	SetWindowBackground :: proc(
 		display:   ^Display,
@@ -214,11 +255,11 @@ foreign xlib {
 		display:   ^Display,
 		window:    Window,
 		cursor:    Cursor,
-		) ---
+		) -> i32 ---
 	UndefineCursor :: proc(
 		display:   ^Display,
 		window:    Window,
-		) ---
+		) -> i32 ---
 	// Windows: querying information
 	QueryTree :: proc(
 		display:   ^Display,
@@ -232,7 +273,7 @@ foreign xlib {
 		display: ^Display,
 		window:  Window,
 		attr:    ^XWindowAttributes,
-		) ---
+		) -> i32 ---
 	GetGeometry :: proc(
 		display:   ^Display,
 		drawable:  Drawable,
@@ -316,19 +357,19 @@ foreign xlib {
 		mode:        i32,
 		data:        rawptr,
 		count:       i32,
-		) ---
+		) -> i32 ---
 	RotateWindowProperties :: proc(
 		display:     ^Display,
 		window:      Window,
 		props:       [^]Atom,
 		nprops:      i32,
 		npos:        i32,
-		) ---
+		) -> i32 ---
 	DeleteProperty :: proc(
 		display:     ^Display,
 		window:      Window,
 		prop:        Atom,
-		) ---
+		) -> i32 ---
 	// Selections
 	SetSelectionOwner :: proc(
 		display:     ^Display,
@@ -347,6 +388,18 @@ foreign xlib {
 		property:    Atom,
 		requestor:   Window,
 		time:        Time,
+		) ---
+	GetTextProperty :: proc(
+		display:            ^Display,
+		window:             Window,
+		text_prop_return:   ^XTextProperty,
+		property:           Atom,
+		) -> Status ---
+	SetTextProperty :: proc(
+		display:     ^Display,
+		window:      Window,
+		text_prop:   ^XTextProperty,
+		property:    Atom,
 		) ---
 	// Creating and freeing pixmaps
 	CreatePixmap :: proc(
@@ -971,8 +1024,8 @@ foreign xlib {
 	DisableAccessControl :: proc(display: ^Display) ---
 	// Events
 	SelectInput   :: proc(display: ^Display, window: Window, mask: EventMask) ---
-	Flush         :: proc(display: ^Display) ---
-	Sync          :: proc(display: ^Display) ---
+	Flush         :: proc(display: ^Display) -> i32 ---
+	Sync          :: proc(display: ^Display, discard: bool) -> i32 ---
 	EventsQueued  :: proc(display: ^Display, mode: EventQueueMode) -> i32 ---
 	Pending       :: proc(display: ^Display) -> i32 ---
 	NextEvent     :: proc(display: ^Display, event: ^XEvent) ---

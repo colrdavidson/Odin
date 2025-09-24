@@ -69,9 +69,9 @@ decoder :: struct  {
 	outputSampleRate:       u32,
 	converter:              data_converter,    /* <-- Data conversion is achieved by running frames through this. */
 	pInputCache:            rawptr,            /* In input format. Can be null if it's not needed. */
-  inputCacheCap:          u64,               /* The capacity of the input cache. */
-  inputCacheConsumed:     u64,               /* The number of frames that have been consumed in the cache. Used for determining the next valid frame. */
-  inputCacheRemaining:    u64,               /* The number of valid frames remaining in the cahce. */
+	inputCacheCap:          u64,               /* The capacity of the input cache. */
+	inputCacheConsumed:     u64,               /* The number of frames that have been consumed in the cache. Used for determining the next valid frame. */
+	inputCacheRemaining:    u64,               /* The number of valid frames remaining in the cache. */
 	allocationCallbacks:    allocation_callbacks,
 	data: struct #raw_union {
 		vfs: struct {
@@ -111,7 +111,7 @@ foreign lib {
 	decoder_read_pcm_frames :: proc(pDecoder: ^decoder, pFramesOut: rawptr, frameCount: u64, pFramesRead: ^u64) -> result ---
 
 	/*
-	Seeks to a PCM frame based on it's absolute index.
+	Seeks to a PCM frame based on its absolute index.
 
 	This is not thread safe without your own synchronization.
 	*/

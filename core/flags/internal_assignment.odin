@@ -1,4 +1,4 @@
-//+private
+#+private
 package flags
 
 import "base:intrinsics"
@@ -14,10 +14,10 @@ import "core:reflect"
 // positionals first before adding it to a fallback field.
 @(optimization_mode="favor_size")
 push_positional :: #force_no_inline proc (model: ^$T, parser: ^Parser, arg: string) -> (error: Error) {
-	if bit_array.get(&parser.filled_pos, parser.filled_pos.max_index) {
-		// The max index is set, which means we're out of space.
+	if set, valid_index := bit_array.get(&parser.filled_pos, parser.filled_pos.length - 1); set || !valid_index {
+		// The index below the last one is either set or invalid, which means we're out of space.
 		// Add one free bit by setting the index above to false.
-		bit_array.set(&parser.filled_pos, 1 + parser.filled_pos.max_index, false)
+		bit_array.set(&parser.filled_pos, parser.filled_pos.length, false)
 	}
 
 	pos: int = ---
@@ -33,9 +33,9 @@ push_positional :: #force_no_inline proc (model: ^$T, parser: ^Parser, arg: stri
 	field, index, has_pos_assigned := get_field_by_pos(model, pos)
 
 	if !has_pos_assigned {
-		when intrinsics.type_has_field(T, INTERNAL_VARIADIC_FLAG) {
+		when intrinsics.type_has_field(T, INTERNAL_OVERFLOW_FLAG) {
 			// Add it to the fallback array.
-			field = reflect.struct_field_by_name(T, INTERNAL_VARIADIC_FLAG)
+			field = reflect.struct_field_by_name(T, INTERNAL_OVERFLOW_FLAG)
 		} else {
 			return Parse_Error {
 				.Extra_Positional,
@@ -117,8 +117,8 @@ set_unix_flag :: proc(model: ^$T, parser: ^Parser, name: string) -> (future_args
 	case runtime.Type_Info_Dynamic_Array:
 		future_args = 1
 		if tag, ok := reflect.struct_tag_lookup(field.tag, TAG_ARGS); ok {
-			if length, is_variadic := get_struct_subtag(tag, SUBTAG_VARIADIC); is_variadic {
-				// Variadic arrays may specify how many arguments they consume at once.
+			if length, is_manifold := get_struct_subtag(tag, SUBTAG_MANIFOLD); is_manifold {
+				// Manifold arrays may specify how many arguments they consume at once.
 				// Otherwise, they take everything that's left.
 				if value, value_ok := strconv.parse_u64_of_base(length, 10); value_ok {
 					future_args = cast(int)value

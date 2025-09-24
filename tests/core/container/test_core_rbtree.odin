@@ -11,6 +11,7 @@ import "core:log"
 test_rbtree_integer :: proc(t: ^testing.T, $Key: typeid, $Value: typeid) {
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
+	track.bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
 
@@ -187,7 +188,7 @@ validate_rbtree :: proc(t: ^testing.T, tree: ^$T/rb.Tree($Key, $Value)) {
 }
 
 verify_rbtree_propery_1 :: proc(t: ^testing.T, n: ^$N/rb.Node($Key, $Value)) {
-        testing.expect(t, rb.node_color(n) == .Black || rb.node_color(n) == .Red, "Property #1: Each node is either red or black.")
+	testing.expect(t, rb.node_color(n) == .Black || rb.node_color(n) == .Red, "Property #1: Each node is either red or black.")
 	if n == nil {
 		return
 	}

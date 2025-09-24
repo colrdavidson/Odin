@@ -1,9 +1,11 @@
-//+private
+#+private
 package os2
 
 import "base:runtime"
 import "core:slice"
 import win32 "core:sys/windows"
+
+_Platform_Error :: win32.System_Error
 
 _error_string :: proc(errno: i32) -> string {
 	e := win32.DWORD(errno)
@@ -50,13 +52,18 @@ _get_platform_error :: proc() -> Error {
 	case win32.ERROR_INVALID_HANDLE:
 		return .Invalid_File
 
+	case win32.ERROR_NEGATIVE_SEEK:
+		return .Invalid_Offset
+
+	case win32.ERROR_BROKEN_PIPE:
+		return .Broken_Pipe
+
 	case
 		win32.ERROR_BAD_ARGUMENTS,
 		win32.ERROR_INVALID_PARAMETER,
 		win32.ERROR_NOT_ENOUGH_MEMORY,
 		win32.ERROR_NO_MORE_FILES,
 		win32.ERROR_LOCK_VIOLATION,
-		win32.ERROR_BROKEN_PIPE,
 		win32.ERROR_CALL_NOT_IMPLEMENTED,
 		win32.ERROR_INSUFFICIENT_BUFFER,
 		win32.ERROR_INVALID_NAME,

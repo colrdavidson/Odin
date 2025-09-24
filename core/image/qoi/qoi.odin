@@ -9,7 +9,7 @@
 
 // package qoi implements a QOI image reader
 //
-// The QOI specification is at https://qoiformat.org.
+// The QOI specification is at [[ https://qoiformat.org ]].
 package qoi
 
 import "core:image"
@@ -371,6 +371,6 @@ qoi_hash :: #force_inline proc(pixel: RGBA_Pixel) -> (index: u8) {
 }
 
 @(init, private)
-_register :: proc() {
+_register :: proc "contextless" () {
 	image.register(.QOI, load_from_bytes, destroy)
 }
