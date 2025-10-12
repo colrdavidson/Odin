@@ -6,7 +6,7 @@ set -eu
 : ${LDFLAGS=}
 : ${LLVM_CONFIG=}
 
-CXXFLAGS="$CXXFLAGS -std=c++14 -finstrument-functions-after-inlining"
+CXXFLAGS="$CXXFLAGS -std=c++14 -finstrument-functions"
 DISABLED_WARNINGS="-Wno-switch -Wno-macro-redefined -Wno-unused-value"
 LDFLAGS="$LDFLAGS -pthread -lm"
 OS_ARCH="$(uname -m)"
