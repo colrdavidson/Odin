@@ -394,8 +394,11 @@ enum BuildFlagKind {
 	BuildFlag_MinLinkLibs,
 
 	BuildFlag_PrintLinkerFlags,
+	BuildFlag_ExportLinkedLibraries,
 
 	BuildFlag_IntegerDivisionByZero,
+
+	BuildFlag_BuildDiagnostics,
 
 	// internal use only
 	BuildFlag_InternalFastISel,
@@ -617,11 +620,13 @@ gb_internal bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_MaxErrorCount,           str_lit("max-error-count"),           BuildFlagParam_Integer, Command_all);
 
 	add_flag(&build_flags, BuildFlag_MinLinkLibs,             str_lit("min-link-libs"),             BuildFlagParam_None,    Command__does_build);
+	add_flag(&build_flags, BuildFlag_ExportLinkedLibraries,   str_lit("export-linked-libs-file"),   BuildFlagParam_String,  Command__does_check);
 
 	add_flag(&build_flags, BuildFlag_PrintLinkerFlags,        str_lit("print-linker-flags"),        BuildFlagParam_None,    Command_build);
 
 	add_flag(&build_flags, BuildFlag_IntegerDivisionByZero,   str_lit("integer-division-by-zero"),  BuildFlagParam_String, Command__does_check);
 
+	add_flag(&build_flags, BuildFlag_BuildDiagnostics,        str_lit("build-diagnostics"),         BuildFlagParam_None,    Command__does_build);
 
 	add_flag(&build_flags, BuildFlag_InternalFastISel,        str_lit("internal-fast-isel"),        BuildFlagParam_None,    Command_all);
 	add_flag(&build_flags, BuildFlag_InternalIgnoreLazy,      str_lit("internal-ignore-lazy"),      BuildFlagParam_None,    Command_all);
@@ -1547,6 +1552,14 @@ gb_internal bool parse_build_flags(Array<String> args) {
 							build_context.min_link_libs = true;
 							break;
 
+						case BuildFlag_ExportLinkedLibraries:
+							build_context.export_linked_libs_path = string_trim_whitespace(value.value_string);
+							if (build_context.export_linked_libs_path.len == 0) {
+								gb_printf_err("-%.*s specified an empty path\n", LIT(name));
+								bad_flags = true;
+							}
+							break;
+
 						case BuildFlag_PrintLinkerFlags:
 							build_context.print_linker_flags = true;
 							break;
@@ -1563,6 +1576,10 @@ gb_internal bool parse_build_flags(Array<String> args) {
 								gb_printf_err("-integer-division-by-zero options are 'trap', 'zero', and 'self'.\n");
 								bad_flags = true;
 							}
+							break;
+
+						case BuildFlag_BuildDiagnostics:
+							build_context.build_diagnostics = true;
 							break;
 
 						case BuildFlag_InternalFastISel:
@@ -2258,6 +2275,63 @@ gb_internal void export_dependencies(Checker *c) {
 	}
 }
 
+gb_internal void export_linked_libraries(LinkerData *gen) {
+	gbFile f = {};
+	char * fileName = (char *)build_context.export_linked_libs_path.text;
+	gbFileError err = gb_file_open_mode(&f, gbFileMode_Write, fileName);
+	if (err != gbFileError_None) {
+		gb_printf_err("Failed to export linked library list to: %s\n", fileName);
+		exit_with_errors();
+		return;
+	}
+	defer (gb_file_close(&f));
+
+	StringSet min_libs_set = {};
+	string_set_init(&min_libs_set, 64);
+	defer (string_set_destroy(&min_libs_set));
+
+	for (auto *e : gen->foreign_libraries) {
+		GB_ASSERT(e->kind == Entity_LibraryName);
+
+		for (auto lib_path : e->LibraryName.paths) {
+			lib_path = string_trim_whitespace(lib_path);
+			if (lib_path.len == 0) {
+				continue;
+			}
+
+			if (string_set_update(&min_libs_set, lib_path)) {
+				continue;
+			}
+
+			gb_fprintf(&f, "%.*s\t", LIT(lib_path));
+
+			String ext = path_extension(lib_path, false);
+			if (str_eq_ignore_case(ext, "a") || str_eq_ignore_case(ext, "lib") ||
+				str_eq_ignore_case(ext, "o") || str_eq_ignore_case(ext, "obj")
+			) {
+				gb_fprintf(&f, "static");
+			} else {
+				gb_fprintf(&f, "dynamic");
+			}
+
+			gb_fprintf(&f, "\t");
+			ast_node(imp, ForeignImportDecl, e->LibraryName.decl);
+			for (Ast* file_path : imp->filepaths) {
+				GB_ASSERT(file_path->tav.mode == Addressing_Constant && file_path->tav.value.kind == ExactValue_String);
+				String file_path_str = file_path->tav.value.value_string;
+
+				if (string_starts_with(file_path_str, str_lit("system:"))) {
+					gb_fprintf(&f, "system");
+				} else {
+					gb_fprintf(&f, "user");
+				}
+			}
+
+			gb_fprintf(&f, "\n");
+		}
+	}
+}
+
 gb_internal void remove_temp_files(lbGenerator *gen) {
 	if (build_context.keep_temp_files) return;
 
@@ -2840,7 +2914,7 @@ gb_internal int print_show_help(String const arg0, String command, String option
 			print_usage_line(2, "Errs on unneeded tokens, such as unneeded semicolons.");
 			print_usage_line(2, "Errs on missing trailing commas followed by a newline.");
 			print_usage_line(2, "Errs on deprecated syntax.");
-			print_usage_line(2, "Errs when the attached-brace style in not adhered to (also known as 1TBS).");
+			print_usage_line(2, "Errs when the attached-brace style is not adhered to (also known as 1TBS).");
 			print_usage_line(2, "Errs when 'case' labels are not in the same column as the associated 'switch' token.");
 		}
 	}
@@ -3720,6 +3794,11 @@ int main(int arg_count, char const **arg_ptr) {
 			String item = string_split_iterator(&target_it, ',');
 			if (item == "") break;
 
+			if (*item.text == '+' || *item.text == '-') {
+				item.text++;
+				item.len--;
+			}
+
 			String invalid;
 			if (!check_target_feature_is_valid_for_target_arch(item, &invalid) && item != str_lit("help")) {
 				if (item != str_lit("?")) {
@@ -3936,6 +4015,10 @@ int main(int arg_count, char const **arg_ptr) {
 						export_dependencies(checker);
 					}
 					return result;
+				} else {
+					if (build_context.export_linked_libs_path != "") {
+						export_linked_libraries(gen);
+					}
 				}
 				break;
 			}

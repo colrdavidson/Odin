@@ -6424,6 +6424,7 @@ gb_internal u64 parse_feature_tag(Token token_for_pos, String s) {
 				switch (flag) {
 				case OptInFeatureFlag_IntegerDivisionByZero_Trap:
 				case OptInFeatureFlag_IntegerDivisionByZero_Zero:
+				case OptInFeatureFlag_IntegerDivisionByZero_AllBits:
 					syntax_error(token_for_pos, "Feature flag does not support notting with '!' - '%.*s'", LIT(p));
 					break;
 				}
@@ -6436,6 +6437,7 @@ gb_internal u64 parse_feature_tag(Token token_for_pos, String s) {
 			error_line("\tinteger-division-by-zero:trap\n");
 			error_line("\tinteger-division-by-zero:zero\n");
 			error_line("\tinteger-division-by-zero:self\n");
+			error_line("\tinteger-division-by-zero:all-bits\n");
 			return OptInFeatureFlag_NONE;
 		}
 	}
@@ -6561,6 +6563,10 @@ gb_internal bool parse_file_tag(const String &lc, const Token &tok, AstFile *f) 
 	} else if (string_starts_with(lc, str_lit("vet"))) {
 		f->vet_flags = parse_vet_tag(tok, lc);
 		f->vet_flags_set = true;
+	} else if (string_starts_with(lc, str_lit("test"))) {
+		if ((build_context.command_kind & Command_test) == 0) {
+			return false;
+		}
 	} else if (string_starts_with(lc, str_lit("ignore"))) {
 		return false;
 	} else if (string_starts_with(lc, str_lit("private"))) {
