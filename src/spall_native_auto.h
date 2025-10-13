@@ -153,9 +153,17 @@ SPALL_FN void spall_pause(void) {
 }
 #elif SPALL_IS_ARM64
 SPALL_FN uint64_t spall_get_clock(void) {
-    int64_t timer_val;
-    asm volatile("mrs %0, cntvct_el0" : "=r"(timer_val));
-    return (uint64_t)timer_val;
+/*
+    uint64_t timer_val;
+    asm volatile("mrs %0, cntvct_el0;" : "=r"(timer_val) :: "memory");
+    return timer_val;
+*/
+
+	struct timespec tm;
+	clock_gettime(CLOCK_MONOTONIC_RAW, &tm);
+
+	uint64_t nanos = ((uint64_t)tm.tv_sec * 1000000000ULL) + (uint64_t)tm.tv_nsec;
+	return nanos;
 }
 SPALL_FN void spall_pause(void) {
     asm volatile("yield");
@@ -240,8 +248,8 @@ typedef struct SpallBuffer {
     uint64_t previous_addr;
     uint64_t previous_caller;
 
-    uint32_t current_depth;
-    uint32_t max_depth;
+    int64_t current_depth;
+    int64_t max_depth;
 } SpallBuffer;
 
 
@@ -275,7 +283,7 @@ SPALL_FN uint64_t spall_auto_get_base_address(void) {
 }
 
 SPALL_FN bool get_program_path(char **out_path) {
-    char path[PATH_MAX] = {0};
+    char path[PATH_MAX+1] = {0};
     uint32_t size = sizeof(path);
 
     ssize_t buff_len = (ssize_t)readlink("/proc/self/exe", path, size - 1);
@@ -284,7 +292,7 @@ SPALL_FN bool get_program_path(char **out_path) {
         return false;
     }
 
-    char *post_path = (char *)calloc(PATH_MAX, 1);
+    char *post_path = (char *)calloc(PATH_MAX+1, 1);
     if (realpath(path, post_path) == NULL) {
         free(post_path);
         *out_path = NULL;
@@ -385,11 +393,13 @@ SPALL_FN double spall_get_clock_multiplier(void) {
 }
 #elif SPALL_IS_ARM64
 SPALL_FN double spall_get_clock_multiplier(void) {
+/*
     uint64_t freq_val;
     asm volatile("mrs %0, cntfrq_el0" : "=r"(freq_val));
 
     double multiplier = 1000000000.0 / (double)freq_val;
-    return multiplier;
+*/
+    return 1.0;
 }
 #endif
 
@@ -546,7 +556,7 @@ SPALL_FN void *spall_writer(void *arg) {
 #endif
 }
 
-SPALL_FN SPALL_FORCE_INLINE bool spall__file_write(void *p, size_t n) {
+SPALL_NOINSTRUMENT SPALL_FORCE_INLINE bool spall__file_write(void *p, size_t n) {
     atomic_store(&spall_buffer->writer.size, n);
     atomic_store(&spall_buffer->writer.ptr, (uint64_t)p);
     spall_signal(&spall_buffer->writer.ptr);
@@ -569,7 +579,10 @@ SPALL_NOINSTRUMENT SPALL_FORCE_INLINE bool spall_auto_buffer_flush(void) {
     if (spall_buffer->head > 0) {
         sbp->size = (uint32_t)(spall_buffer->head - sizeof(SpallBufferHeader));
         sbp->first_ts = spall_buffer->first_ts;
-        sbp->max_depth = spall_buffer->max_depth;
+        if (spall_buffer->max_depth < 0) {
+            return false;
+        }
+        sbp->max_depth = (uint32_t)spall_buffer->max_depth;
         if (!spall__file_write(spall_buffer->data + data_start, spall_buffer->head)) return false;
 
         spall_buffer->write_half = !spall_buffer->write_half;
@@ -580,6 +593,7 @@ SPALL_NOINSTRUMENT SPALL_FORCE_INLINE bool spall_auto_buffer_flush(void) {
     sbp->size = 0;
     sbp->first_ts = 0;
     sbp->tid = spall_buffer->thread_id;
+    sbp->max_depth = 0;
 
     spall_buffer->head = sizeof(SpallBufferHeader);
     spall_buffer->first_ts = 0;
